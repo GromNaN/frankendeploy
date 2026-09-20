@@ -14,7 +14,8 @@ import (
 )
 
 // mongoImage is the MongoDB community server image used for the managed
-// mongodb service. The full name "mongodb" is used everywhere, never "mongo".
+// mongodb service. The image name keeps its full "mongodb" spelling, but the
+// Go identifier uses the short scoped prefix (this file is mongo.go).
 const mongoImage = "mongodb/mongodb-community-server:8.0"
 
 // mongoReplicaSetName is the single-node replica set name.
@@ -26,13 +27,13 @@ func mongoCredentialsFile(appPath string) string {
 	return filepath.Join(appPath, "shared", ".mongo_credentials")
 }
 
-// DeployMongoService ensures the managed mongodb container exists (when
+// DeployMongoDBService ensures the managed mongodb container exists (when
 // mongodb.managed is true) and returns the MONGODB_URI the app must use.
 // Container and volume names are per-app (<app>-mongodb / <app>-mongodb-data)
 // so two apps on the same server never collide. Credentials are persisted only
 // once the single-node replica set is PRIMARY, so a failed init is retried on
 // the next deploy.
-func DeployMongoService(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, appPath string, log Logger) (string, error) {
+func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, appPath string, log Logger) (string, error) {
 	if log == nil {
 		log = NopLogger{}
 	}

@@ -21,7 +21,7 @@ func mongoCRedentialsPattern() string {
 	return "cat /opt/frankendeploy/apps/myapp/shared/.mongo_credentials"
 }
 
-func TestDeployMongoService_ReusesRunningContainerAndCredentials(t *testing.T) {
+func TestDeployMongoDBService_ReusesRunningContainerAndCredentials(t *testing.T) {
 	mock := dbMock(map[string]ssh.ExecResult{
 		mongoCRedentialsPattern():         {Stdout: savedMongoURI + "\n", ExitCode: 0},
 		"docker ps -aq":                   {Stdout: "abc123\n", ExitCode: 0},
@@ -29,9 +29,9 @@ func TestDeployMongoService_ReusesRunningContainerAndCredentials(t *testing.T) {
 		"rs.status().members[0].stateStr": {Stdout: "PRIMARY\n", ExitCode: 0},
 	})
 
-	uri, err := DeployMongoService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
+	uri, err := DeployMongoDBService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
 	if err != nil {
-		t.Fatalf("DeployMongoService: %v", err)
+		t.Fatalf("DeployMongoDBService: %v", err)
 	}
 	if uri != savedMongoURI {
 		t.Errorf("expected saved URI to be reused, got %q", uri)
@@ -43,7 +43,7 @@ func TestDeployMongoService_ReusesRunningContainerAndCredentials(t *testing.T) {
 	}
 }
 
-func TestDeployMongoService_StartsStoppedContainerAndReusesCredentials(t *testing.T) {
+func TestDeployMongoDBService_StartsStoppedContainerAndReusesCredentials(t *testing.T) {
 	mock := dbMock(map[string]ssh.ExecResult{
 		mongoCRedentialsPattern():         {Stdout: savedMongoURI + "\n", ExitCode: 0},
 		"docker ps -aq":                   {Stdout: "abc123\n", ExitCode: 0},
@@ -51,9 +51,9 @@ func TestDeployMongoService_StartsStoppedContainerAndReusesCredentials(t *testin
 		"rs.status().members[0].stateStr": {Stdout: "PRIMARY\n", ExitCode: 0},
 	})
 
-	uri, err := DeployMongoService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
+	uri, err := DeployMongoDBService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
 	if err != nil {
-		t.Fatalf("DeployMongoService: %v", err)
+		t.Fatalf("DeployMongoDBService: %v", err)
 	}
 	if uri != savedMongoURI {
 		t.Errorf("expected saved URI, got %q", uri)
@@ -72,14 +72,14 @@ func TestDeployMongoService_StartsStoppedContainerAndReusesCredentials(t *testin
 	}
 }
 
-func TestDeployMongoService_VolumeWithoutCredentialsFailsExplicitly(t *testing.T) {
+func TestDeployMongoDBService_VolumeWithoutCredentialsFailsExplicitly(t *testing.T) {
 	mock := dbMock(map[string]ssh.ExecResult{
 		mongoCRedentialsPattern(): {ExitCode: 1},
 		"docker ps -aq":           {Stdout: "", ExitCode: 0},
 		"docker volume ls":        {Stdout: "myapp-mongodb-data\n", ExitCode: 0},
 	})
 
-	_, err := DeployMongoService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
+	_, err := DeployMongoDBService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
 	if err == nil {
 		t.Fatal("a data volume without credentials must fail explicitly (regenerated password would be ignored by the datadir)")
 	}
@@ -93,7 +93,7 @@ func TestDeployMongoService_VolumeWithoutCredentialsFailsExplicitly(t *testing.T
 	}
 }
 
-func TestDeployMongoService_FreshSetupRequestsPrimaryBeforeSaving(t *testing.T) {
+func TestDeployMongoDBService_FreshSetupRequestsPrimaryBeforeSaving(t *testing.T) {
 	mock := dbMock(map[string]ssh.ExecResult{
 		mongoCRedentialsPattern():         {ExitCode: 1},
 		"docker ps -aq":                   {Stdout: "", ExitCode: 0},
@@ -101,9 +101,9 @@ func TestDeployMongoService_FreshSetupRequestsPrimaryBeforeSaving(t *testing.T) 
 		"rs.status().members[0].stateStr": {Stdout: "PRIMARY\n", ExitCode: 0},
 	})
 
-	uri, err := DeployMongoService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
+	uri, err := DeployMongoDBService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
 	if err != nil {
-		t.Fatalf("DeployMongoService: %v", err)
+		t.Fatalf("DeployMongoDBService: %v", err)
 	}
 	if !strings.HasPrefix(uri, "mongodb://myapp:") {
 		t.Errorf("expected a fresh MONGODB_URI, got %q", uri)

@@ -186,7 +186,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	// section from database.*, provisioned when mongodb.managed is true)
 	if projectCfg.MongoDB.Enabled && projectCfg.MongoDB.Managed {
 		PrintInfo("Setting up managed mongodb...")
-		if _, err := deploy.DeployMongoService(ctx, client, projectCfg, remoteAppPath, cmdLogger{}); err != nil {
+		if _, err := deploy.DeployMongoDBService(ctx, client, projectCfg, remoteAppPath, cmdLogger{}); err != nil {
 			return fmt.Errorf("mongodb setup failed: %w", err)
 		}
 		PrintSuccess("MongoDB ready")
