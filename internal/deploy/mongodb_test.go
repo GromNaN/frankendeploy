@@ -93,7 +93,7 @@ func TestDeployMongoDBService_VolumeWithoutCredentialsFailsExplicitly(t *testing
 	}
 }
 
-func TestDeployMongoDBService_FreshSetupRequestsPrimaryBeforeSaving(t *testing.T) {
+func TestDeployMongoDBService_FreshSetupCreatesAndInits(t *testing.T) {
 	mock := dbMock(map[string]ssh.ExecResult{
 		mongoCRedentialsPattern():         {ExitCode: 1},
 		"docker ps -aq":                   {Stdout: "", ExitCode: 0},
@@ -131,6 +131,37 @@ func TestDeployMongoDBService_FreshSetupRequestsPrimaryBeforeSaving(t *testing.T
 		t.Error("expected rs.initiate() with an explicit member host")
 	}
 	if !saved {
-		t.Error("expected credentials to be saved after PRIMARY was reached")
+		t.Error("expected credentials to be saved (before/around init so a failed init is retried next deploy)")
+	}
+}
+
+func TestDeployMongoDBService_FailedInitPersistsCredentialsForRetry(t *testing.T) {
+	old := mongoAttempts
+	mongoAttempts = 2
+	defer func() { mongoAttempts = old }()
+
+	// The node accepts auth but never elects a PRIMARY within the (short)
+	// retry budget: the deploy errors, yet the credentials are already
+	// persisted so the next deploy resumes via the reuse branch.
+	mock := dbMock(map[string]ssh.ExecResult{
+		mongoCRedentialsPattern(): {ExitCode: 1},
+		"docker ps -aq":           {Stdout: "", ExitCode: 0},
+		"docker volume ls":        {Stdout: "", ExitCode: 0},
+		"rs.initiate":             {ExitCode: 0},
+	})
+
+	_, err := DeployMongoDBService(context.Background(), mock, managedMongoTestConfig(), "/opt/frankendeploy/apps/myapp", nil)
+	if err == nil {
+		t.Fatal("expected a PRIMARY timeout when the set never elects a primary")
+	}
+
+	var saved bool
+	for _, cmd := range mock.Commands {
+		if strings.Contains(cmd, ".mongo_credentials") && strings.HasPrefix(cmd, "echo ") {
+			saved = true
+		}
+	}
+	if !saved {
+		t.Error("expected credentials to be persisted even when the init failed, so the next deploy retries it")
 	}
 }

@@ -21,6 +21,10 @@ const image = "mongodb/mongodb-community-server:8.0"
 // replicaSetName is the single-node replica set name.
 const replicaSetName = "rs0"
 
+// mongoAttempts bounds each mongodb readiness/PRIMARY wait. Higher than the SQL
+// readiness budget: a cold mongod plus a single-node election can exceed 30s.
+var mongoAttempts = 90
+
 // credentialsFile returns the path where the managed mongodb MONGODB_URI is
 // persisted for reuse across deploys, rollbacks and reloads.
 func credentialsFile(appPath string) string {
@@ -130,16 +134,20 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 		return "", err
 	}
 
-	// Init the single-node replica set and wait for PRIMARY before persisting
-	// credentials, so a failed init is retried on the next deploy.
-	if err := initiateReplicaSet(ctx, client, containerName, memberHost, user, password); err != nil {
-		return "", err
-	}
+	// Persist credentials once the container accepts the root user: the URI is
+	// valid even if the replica-set init below is interrupted. On a later deploy
+	// the reuse branch runs ensureReplicaSetPrimary to finish it, so a failed
+	// init is retried instead of deadlocking on the orphaned-volume guard.
 	if _, err := client.Exec(ctx, fmt.Sprintf("echo %s > %s", security.ShellEscape(databaseURL), credFile)); err != nil {
 		return "", fmt.Errorf("failed to save mongodb credentials: %w", err)
 	}
 	if _, err := client.Exec(ctx, fmt.Sprintf("chmod 600 %s", credFile)); err != nil {
 		log.Warning("Could not set permissions on credentials file: %v", err)
+	}
+
+	// Turn the node into a single-node replica set and wait for PRIMARY.
+	if err := initiateReplicaSet(ctx, client, containerName, memberHost, user, password); err != nil {
+		return "", err
 	}
 
 	return databaseURL, nil
@@ -148,7 +156,7 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 // waitForAccepting polls mongosh until the container accepts an authenticated
 // connection (the root user is created by MONGO_INITDB_ROOT_*).
 func waitForAccepting(ctx context.Context, client ssh.Executor, containerName, user, password string) error {
-	for i := 0; i < DBReadinessAttempts; i++ {
+	for i := 0; i < mongoAttempts; i++ {
 		pingCmd := fmt.Sprintf("docker exec %s mongosh -u %s -p %s --authenticationDatabase admin --quiet --eval \"db.adminCommand({ping:1}).ok\"",
 			containerName, security.ShellEscape(user), security.ShellEscape(password))
 		checkResult, _ := client.Exec(ctx, pingCmd)
@@ -158,7 +166,7 @@ func waitForAccepting(ctx context.Context, client ssh.Executor, containerName, u
 		time.Sleep(1 * time.Second)
 	}
 	return fmt.Errorf("mongodb %s did not become ready after %d seconds — check its logs: docker logs %s",
-		containerName, DBReadinessAttempts, containerName)
+		containerName, mongoAttempts, containerName)
 }
 
 // initiateReplicaSet turns the fresh mongodb node into a single-node replica
@@ -167,7 +175,11 @@ func waitForAccepting(ctx context.Context, client ssh.Executor, containerName, u
 func initiateReplicaSet(ctx context.Context, client ssh.Executor, containerName, memberHost, user, password string) error {
 	initCmd := fmt.Sprintf("docker exec %s mongosh -u %s -p %s --authenticationDatabase admin --quiet --eval 'rs.initiate({_id:\"%s\", members:[{_id:0, host:\"%s\"}]})'",
 		containerName, security.ShellEscape(user), security.ShellEscape(password), replicaSetName, memberHost)
-	if _, err := client.Exec(ctx, initCmd); err != nil {
+	if result, err := client.Exec(ctx, initCmd); err != nil {
+		return fmt.Errorf("failed to initiate mongodb replica set: %w", err)
+	} else if err := result.Err(); err != nil {
+		// An exit code other than 0 (e.g. AlreadyInitialized, auth failure) is
+		// surfaced rather than swallowed until the PRIMARY wait times out.
 		return fmt.Errorf("failed to initiate mongodb replica set: %w", err)
 	}
 	return waitForPrimary(ctx, client, containerName, user, password)
@@ -190,14 +202,14 @@ func ensureReplicaSetPrimary(ctx context.Context, client ssh.Executor, container
 
 // waitForPrimary polls rs.status() until the single member is PRIMARY.
 func waitForPrimary(ctx context.Context, client ssh.Executor, containerName, user, password string) error {
-	for i := 0; i < DBReadinessAttempts; i++ {
+	for i := 0; i < mongoAttempts; i++ {
 		if isPrimary(ctx, client, containerName, user, password) {
 			return nil
 		}
 		time.Sleep(1 * time.Second)
 	}
 	return fmt.Errorf("mongodb replica set did not become PRIMARY after %d seconds — check its logs: docker logs %s",
-		DBReadinessAttempts, containerName)
+		mongoAttempts, containerName)
 }
 
 // isPrimary reports whether the node reports its single member as PRIMARY.
