@@ -172,8 +172,9 @@ services:
 
   mongodb-init:
     # One-shot: turn the single mongodb node into a replica set and wait for
-    # PRIMARY. Idempotent: on a volume that already holds an rs0 config it
-    # just reports the existing PRIMARY state.
+    # PRIMARY. Idempotent: exits immediately when the set is already PRIMARY
+    # (rs.initiate() would throw AlreadyInitialized on an existing rs0 config),
+    # otherwise initiates then waits.
     image: mongodb/mongodb-community-server:8.0
     depends_on:
       mongodb:
@@ -183,10 +184,13 @@ services:
       - -c
       - |
         for i in $(seq 1 30); do
-          mongosh --host mongodb -u {{ .DevDBUser }} -p {{ .DevDBPassword }} --authenticationDatabase admin --quiet --eval 'rs.initiate({_id:"rs0", members:[{_id:0, host:"mongodb:27017"}]})' >/dev/null 2>&1 && break
+          if mongosh --host mongodb -u {{ .DevDBUser }} -p {{ .DevDBPassword }} --authenticationDatabase admin --quiet --eval 'rs.status().members[0].stateStr' 2>/dev/null | grep -q PRIMARY; then
+            exit 0
+          fi
+          mongosh --host mongodb -u {{ .DevDBUser }} -p {{ .DevDBPassword }} --authenticationDatabase admin --quiet --eval 'rs.initiate({_id:"rs0", members:[{_id:0, host:"mongodb:27017"}]})' >/dev/null 2>&1
           sleep 1
         done
-        mongosh --host mongodb -u {{ .DevDBUser }} -p {{ .DevDBPassword }} --authenticationDatabase admin --quiet --eval 'rs.status().members[0].stateStr' | grep -q PRIMARY
+        exit 1
 {{- end }}
 
 volumes:
