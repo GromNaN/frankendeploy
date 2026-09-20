@@ -13,17 +13,17 @@ import (
 	"github.com/yoanbernabeu/frankendeploy/internal/ssh"
 )
 
-// mongoImage is the MongoDB community server image used for the managed
-// mongodb service. The image name keeps its full "mongodb" spelling, but the
-// Go identifier uses the short scoped prefix (this file is mongo.go).
-const mongoImage = "mongodb/mongodb-community-server:8.0"
+// image is the MongoDB community server image used for the managed mongodb
+// service. This file is scoped to MongoDB, so internal names are unprefixed;
+// the image string keeps its full 'mongodb' spelling.
+const image = "mongodb/mongodb-community-server:8.0"
 
-// mongoReplicaSetName is the single-node replica set name.
-const mongoReplicaSetName = "rs0"
+// replicaSetName is the single-node replica set name.
+const replicaSetName = "rs0"
 
-// mongoCredentialsFile returns the path where the managed mongodb MONGODB_URI
-// is persisted for reuse across deploys, rollbacks and reloads.
-func mongoCredentialsFile(appPath string) string {
+// credentialsFile returns the path where the managed mongodb MONGODB_URI is
+// persisted for reuse across deploys, rollbacks and reloads.
+func credentialsFile(appPath string) string {
 	return filepath.Join(appPath, "shared", ".mongo_credentials")
 }
 
@@ -41,10 +41,10 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 	containerName := fmt.Sprintf("%s-mongodb", cfg.Name)
 	volumeName := fmt.Sprintf("%s-mongodb-data", cfg.Name)
 	memberHost := containerName + ":27017"
-	credentialsFile := mongoCredentialsFile(appPath)
+	credFile := credentialsFile(appPath)
 
 	savedURL := ""
-	if result, err := client.Exec(ctx, fmt.Sprintf("cat %s 2>/dev/null", credentialsFile)); err == nil && result != nil && result.ExitCode == 0 {
+	if result, err := client.Exec(ctx, fmt.Sprintf("cat %s 2>/dev/null", credFile)); err == nil && result != nil && result.ExitCode == 0 {
 		savedURL = strings.TrimSpace(result.Stdout)
 	}
 
@@ -68,7 +68,7 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 		}
 		// A previous rs.initiate() may never have completed (interrupted first
 		// start): make sure the single-node replica set is PRIMARY before reuse.
-		if err := ensureMongoReplicaSetPrimary(ctx, client, containerName, memberHost, savedURL); err != nil {
+		if err := ensureReplicaSetPrimary(ctx, client, containerName, memberHost, savedURL); err != nil {
 			return "", err
 		}
 		return savedURL, nil
@@ -85,7 +85,7 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 		return "", fmt.Errorf("mongodb volume %s exists but %s is missing: the existing data keeps its old credentials, so regenerating a password would break authentication.\n"+
 			"Either restore the credentials file, or remove the old data to start fresh:\n"+
 			"  docker rm -f %s && docker volume rm %s",
-			volumeName, credentialsFile, containerName, volumeName)
+			volumeName, credFile, containerName, volumeName)
 	}
 
 	// Fresh setup: generate credentials
@@ -96,7 +96,7 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 	}
 	// Single-node replica set: the driver connects with replicaSet=rs0.
 	databaseURL := fmt.Sprintf("mongodb://%s:%s@%s:27017/%s?authSource=admin&replicaSet=%s",
-		user, password, containerName, dbName, mongoReplicaSetName)
+		user, password, containerName, dbName, replicaSetName)
 
 	// Remove any leftover container before recreation
 	_, _ = client.Exec(ctx, fmt.Sprintf("docker stop %s 2>/dev/null || true", containerName))
@@ -117,8 +117,8 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 		envArgs,
 		volumeName,
 		"/data/db",
-		mongoImage,
-		mongoReplicaSetName)
+		image,
+		replicaSetName)
 	if result, err := client.Exec(ctx, runCmd); err != nil {
 		return "", fmt.Errorf("failed to start mongodb container: %w", err)
 	} else if err := result.Err(); err != nil {
@@ -126,28 +126,28 @@ func DeployMongoDBService(ctx context.Context, client ssh.Executor, cfg *config.
 	}
 
 	log.Info("Waiting for mongodb to be ready...")
-	if err := waitForMongoAccepting(ctx, client, containerName, user, password); err != nil {
+	if err := waitForAccepting(ctx, client, containerName, user, password); err != nil {
 		return "", err
 	}
 
 	// Init the single-node replica set and wait for PRIMARY before persisting
 	// credentials, so a failed init is retried on the next deploy.
-	if err := initiateMongoReplicaSet(ctx, client, containerName, memberHost, user, password); err != nil {
+	if err := initiateReplicaSet(ctx, client, containerName, memberHost, user, password); err != nil {
 		return "", err
 	}
-	if _, err := client.Exec(ctx, fmt.Sprintf("echo %s > %s", security.ShellEscape(databaseURL), credentialsFile)); err != nil {
+	if _, err := client.Exec(ctx, fmt.Sprintf("echo %s > %s", security.ShellEscape(databaseURL), credFile)); err != nil {
 		return "", fmt.Errorf("failed to save mongodb credentials: %w", err)
 	}
-	if _, err := client.Exec(ctx, fmt.Sprintf("chmod 600 %s", credentialsFile)); err != nil {
+	if _, err := client.Exec(ctx, fmt.Sprintf("chmod 600 %s", credFile)); err != nil {
 		log.Warning("Could not set permissions on credentials file: %v", err)
 	}
 
 	return databaseURL, nil
 }
 
-// waitForMongoAccepting polls mongosh until the container accepts an
-// authenticated connection (the root user is created by MONGO_INITDB_ROOT_*).
-func waitForMongoAccepting(ctx context.Context, client ssh.Executor, containerName, user, password string) error {
+// waitForAccepting polls mongosh until the container accepts an authenticated
+// connection (the root user is created by MONGO_INITDB_ROOT_*).
+func waitForAccepting(ctx context.Context, client ssh.Executor, containerName, user, password string) error {
 	for i := 0; i < DBReadinessAttempts; i++ {
 		pingCmd := fmt.Sprintf("docker exec %s mongosh -u %s -p %s --authenticationDatabase admin --quiet --eval \"db.adminCommand({ping:1}).ok\"",
 			containerName, security.ShellEscape(user), security.ShellEscape(password))
@@ -161,37 +161,37 @@ func waitForMongoAccepting(ctx context.Context, client ssh.Executor, containerNa
 		containerName, DBReadinessAttempts, containerName)
 }
 
-// initiateMongoReplicaSet turns the fresh mongodb node into a single-node
-// replica set whose member host is explicit (so the container UUID never leaks
-// into the member list), then waits for PRIMARY.
-func initiateMongoReplicaSet(ctx context.Context, client ssh.Executor, containerName, memberHost, user, password string) error {
+// initiateReplicaSet turns the fresh mongodb node into a single-node replica
+// set whose member host is explicit (so the container UUID never leaks into
+// the member list), then waits for PRIMARY.
+func initiateReplicaSet(ctx context.Context, client ssh.Executor, containerName, memberHost, user, password string) error {
 	initCmd := fmt.Sprintf("docker exec %s mongosh -u %s -p %s --authenticationDatabase admin --quiet --eval 'rs.initiate({_id:\"%s\", members:[{_id:0, host:\"%s\"}]})'",
-		containerName, security.ShellEscape(user), security.ShellEscape(password), mongoReplicaSetName, memberHost)
+		containerName, security.ShellEscape(user), security.ShellEscape(password), replicaSetName, memberHost)
 	if _, err := client.Exec(ctx, initCmd); err != nil {
 		return fmt.Errorf("failed to initiate mongodb replica set: %w", err)
 	}
-	return waitForMongoPrimary(ctx, client, containerName, user, password)
+	return waitForPrimary(ctx, client, containerName, user, password)
 }
 
-// ensureMongoReplicaSetPrimary makes sure an existing managed mongodb node is a
+// ensureReplicaSetPrimary makes sure an existing managed mongodb node is a
 // PRIMARY; a previously failed init is retried here.
-func ensureMongoReplicaSetPrimary(ctx context.Context, client ssh.Executor, containerName, memberHost, databaseURL string) error {
+func ensureReplicaSetPrimary(ctx context.Context, client ssh.Executor, containerName, memberHost, databaseURL string) error {
 	user, password, _, err := parseDatabaseURL(databaseURL)
 	if err != nil {
 		// The reused URI does not parse for an auth check; let the app surface
 		// any problem rather than block the deploy.
 		return nil
 	}
-	if isMongoPrimary(ctx, client, containerName, user, password) {
+	if isPrimary(ctx, client, containerName, user, password) {
 		return nil
 	}
-	return initiateMongoReplicaSet(ctx, client, containerName, memberHost, user, password)
+	return initiateReplicaSet(ctx, client, containerName, memberHost, user, password)
 }
 
-// waitForMongoPrimary polls rs.status() until the single member is PRIMARY.
-func waitForMongoPrimary(ctx context.Context, client ssh.Executor, containerName, user, password string) error {
+// waitForPrimary polls rs.status() until the single member is PRIMARY.
+func waitForPrimary(ctx context.Context, client ssh.Executor, containerName, user, password string) error {
 	for i := 0; i < DBReadinessAttempts; i++ {
-		if isMongoPrimary(ctx, client, containerName, user, password) {
+		if isPrimary(ctx, client, containerName, user, password) {
 			return nil
 		}
 		time.Sleep(1 * time.Second)
@@ -200,8 +200,8 @@ func waitForMongoPrimary(ctx context.Context, client ssh.Executor, containerName
 		DBReadinessAttempts, containerName)
 }
 
-// isMongoPrimary reports whether the node reports its single member as PRIMARY.
-func isMongoPrimary(ctx context.Context, client ssh.Executor, containerName, user, password string) bool {
+// isPrimary reports whether the node reports its single member as PRIMARY.
+func isPrimary(ctx context.Context, client ssh.Executor, containerName, user, password string) bool {
 	statusCmd := fmt.Sprintf("docker exec %s mongosh -u %s -p %s --authenticationDatabase admin --quiet --eval 'rs.status().members[0].stateStr'",
 		containerName, security.ShellEscape(user), security.ShellEscape(password))
 	checkResult, _ := client.Exec(ctx, statusCmd)
@@ -211,7 +211,7 @@ func isMongoPrimary(ctx context.Context, client ssh.Executor, containerName, use
 // readSavedMongoURL returns the MONGODB_URI persisted by a managed mongodb
 // deploy (shared/.mongo_credentials). Empty when absent.
 func readSavedMongoURL(ctx context.Context, client ssh.Executor, appPath string) string {
-	result, err := client.Exec(ctx, fmt.Sprintf("cat %s 2>/dev/null", mongoCredentialsFile(appPath)))
+	result, err := client.Exec(ctx, fmt.Sprintf("cat %s 2>/dev/null", credentialsFile(appPath)))
 	if err != nil || result == nil || result.ExitCode != 0 {
 		return ""
 	}
