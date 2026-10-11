@@ -46,6 +46,20 @@ type ComposeData struct {
 	DevDBUser     string
 	DevDBPassword string
 	DevDBName     string
+	// Framework is the target framework (zero value = Symfony).
+	Framework config.Framework
+	// IsLaravel is true when Framework is Laravel (template convenience).
+	IsLaravel bool
+	// DBConnection is the Laravel DB_CONNECTION name for the configured
+	// driver (Laravel ignores DATABASE_URL without it).
+	DBConnection string
+	// DBHost and DBPort are the Laravel DB_HOST/DB_PORT values for the
+	// managed database service in the prod compose (empty when not managed).
+	DBHost string
+	DBPort string
+	// LaravelSQLitePath is the absolute container path of the SQLite file
+	// (Laravel reads DB_DATABASE, not DATABASE_URL, for sqlite).
+	LaravelSQLitePath string
 	// ManagedDatabase is true when the prod compose should emit a database
 	// service (driver is pgsql/mysql and the project opted into managed mode).
 	ManagedDatabase bool
@@ -77,6 +91,7 @@ func (g *ComposeGenerator) GenerateProd() (string, error) {
 
 // buildComposeData builds the data for compose templates
 func (g *ComposeGenerator) buildComposeData(ctx composeContext) (ComposeData, error) {
+	fw := g.config.EffectiveFramework()
 	data := ComposeData{
 		Name:      g.config.Name,
 		ImageName: g.config.Name,
@@ -85,6 +100,19 @@ func (g *ComposeGenerator) buildComposeData(ctx composeContext) (ComposeData, er
 		Assets:    g.config.Assets,
 		Deploy:    g.config.Deploy,
 		Env:       g.config.Env,
+		Framework: fw,
+		IsLaravel: isLaravel(fw),
+	}
+
+	if isLaravel(fw) && g.config.Database.Driver != "" {
+		data.DBConnection = LaravelDBConnection(g.config.Database.Driver)
+		if g.config.Database.Driver == "sqlite" {
+			path := g.config.Database.Path
+			if path == "" {
+				path = "database/database.sqlite"
+			}
+			data.LaravelSQLitePath = path
+		}
 	}
 
 	if ctx == composeContextDev {
@@ -106,6 +134,14 @@ func (g *ComposeGenerator) buildComposeData(ctx composeContext) (ComposeData, er
 
 	if ctx == composeContextProd && g.config.Database.IsManaged() && IsContainerizedDriver(g.config.Database.Driver) {
 		data.ManagedDatabase = true
+		// Laravel does not read DATABASE_URL: the prod compose must carry the
+		// individual DB_* variables of the database service.
+		if isLaravel(fw) {
+			data.DBHost = "database"
+			if info, err := GetDBDriverInfo(g.config.Database.Driver); err == nil {
+				data.DBPort = info.Port
+			}
+		}
 	}
 
 	return data, nil
@@ -120,6 +156,10 @@ func (g *ComposeGenerator) buildDatabaseURL() (string, error) {
 	}
 
 	if driver == "sqlite" {
+		if isLaravel(g.config.EffectiveFramework()) {
+			// Laravel reads the file path from DB_DATABASE, not DATABASE_URL.
+			return "", nil
+		}
 		path := g.config.Database.Path
 		if path == "" {
 			path = "var/data.db"
@@ -145,6 +185,18 @@ func (g *ComposeGenerator) buildDatabaseURL() (string, error) {
 	dbName := g.config.Database.Name
 	if dbName == "" {
 		dbName = DefaultDevDBName
+	}
+
+	// Laravel parses DATABASE_URL into a connection: a plain DSN, no
+	// Doctrine serverVersion/charset parameters, and the scheme must be a
+	// driver Laravel knows.
+	if isLaravel(g.config.EffectiveFramework()) {
+		return fmt.Sprintf("%s://%s:%s@%s:%s/%s",
+			LaravelDBConnection(driver),
+			DefaultDevDBUser, DefaultDevDBPassword,
+			host, port,
+			dbName,
+		), nil
 	}
 
 	version := url.QueryEscape(g.config.Database.Version)

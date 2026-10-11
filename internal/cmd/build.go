@@ -49,7 +49,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	// Worker mode requires a FrankenPHP worker runtime: without one the
 	// container would crash-loop at boot (no runner handles the worker loop)
 	if cfg.FrankenPHP.Worker {
-		if err := checkWorkerRuntime(); err != nil {
+		if err := checkWorkerRuntime(cfg); err != nil {
 			return err
 		}
 	}
@@ -108,7 +108,12 @@ func runBuild(cmd *cobra.Command, args []string) error {
 // checkWorkerRuntime verifies that composer.json ships a FrankenPHP worker
 // runtime (symfony/runtime >= 7.4, or runtime/frankenphp-symfony) before
 // generating worker-mode artifacts.
-func checkWorkerRuntime() error {
+func checkWorkerRuntime(cfg *config.ProjectConfig) error {
+	if cfg.EffectiveFramework() == config.FrameworkLaravel {
+		return fmt.Errorf("frankenphp.worker is enabled but Laravel worker mode requires Laravel Octane " +
+			"(laravel/octane with the FrankenPHP driver), which is not supported yet.\n" +
+			"Set frankenphp.worker: false in frankendeploy.yaml")
+	}
 	comp, err := scanner.New(".").ParseComposer()
 	if err != nil {
 		return fmt.Errorf("frankenphp.worker is enabled but composer.json cannot be read: %w", err)

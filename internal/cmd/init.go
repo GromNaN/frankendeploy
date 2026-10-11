@@ -14,10 +14,11 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize FrankenDeploy configuration",
-	Long: `Analyzes your Symfony project and creates a frankendeploy.yaml
-configuration file with detected settings.
+	Long: `Analyzes your PHP project (Symfony or Laravel) and creates a
+frankendeploy.yaml configuration file with detected settings.
 
 This command will:
+- Detect the framework (Symfony or Laravel)
 - Detect PHP version from composer.json
 - Identify required PHP extensions
 - Detect database driver (PostgreSQL, MySQL, SQLite)
@@ -75,6 +76,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		cfg.Deploy.Domain = initDomain
 	}
 
+	if cfg.EffectiveFramework() == config.FrameworkLaravel {
+		PrintInfo("Laravel does not read the trusted-proxy environment variables by default: " +
+			"wire TRUSTED_PROXIES in bootstrap/app.php so the app sees the real client IP behind Caddy")
+	}
+
 	// Validate configuration
 	if errors := config.ValidateProjectConfig(cfg); errors.HasErrors() {
 		PrintWarning("Configuration has validation issues: %s", errors.Error())
@@ -114,6 +120,7 @@ func printInitSummary(result *config.ScanResult, cfg *config.ProjectConfig) {
 	fmt.Println()
 	fmt.Println("📋 Project Configuration:")
 	fmt.Printf("   Name:        %s\n", cfg.Name)
+	fmt.Printf("   Framework:   %s\n", cfg.EffectiveFramework())
 	fmt.Printf("   PHP:         %s\n", cfg.PHP.Version)
 	fmt.Printf("   Extensions:  %s\n", strings.Join(cfg.PHP.Extensions, ", "))
 

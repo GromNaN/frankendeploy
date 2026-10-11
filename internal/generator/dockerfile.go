@@ -38,10 +38,17 @@ type DockerfileData struct {
 	// Worker enables FrankenPHP worker mode: the generated Caddyfile is
 	// copied into the prod stage (dev keeps the image default, classic mode)
 	Worker bool
+	// Framework is the target framework (zero value = Symfony).
+	Framework config.Framework
+	// IsLaravel is true when Framework is Laravel (template convenience).
+	IsLaravel bool
+	// Commands holds the framework-specific console invocations.
+	Commands FrameworkCommands
 }
 
 // Generate generates the Dockerfile content
 func (g *DockerfileGenerator) Generate() (string, error) {
+	fw := g.config.EffectiveFramework()
 	data := DockerfileData{
 		Name:              g.config.Name,
 		PHP:               g.config.PHP,
@@ -50,6 +57,9 @@ func (g *DockerfileGenerator) Generate() (string, error) {
 		HealthcheckPath:   g.config.Deploy.HealthcheckPath,
 		HasPreload:        hasPreloadFile(),
 		Worker:            g.config.FrankenPHP.Worker,
+		Framework:         fw,
+		IsLaravel:         isLaravel(fw),
+		Commands:          CommandsFor(fw),
 	}
 
 	if g.config.Assets.BuildTool != "" {
@@ -114,9 +124,16 @@ func (g *DockerfileGenerator) WriteDockerfile(path string) error {
 	return nil
 }
 
+// DockerignoreData holds data for the .dockerignore template.
+type DockerignoreData struct {
+	IsLaravel bool
+}
+
 // GenerateDockerignore generates a .dockerignore file
 func (g *DockerfileGenerator) GenerateDockerignore() (string, error) {
-	return g.loader.Execute("dockerignore.tmpl", nil)
+	return g.loader.Execute("dockerignore.tmpl", DockerignoreData{
+		IsLaravel: isLaravel(g.config.EffectiveFramework()),
+	})
 }
 
 // WriteDockerignore writes the .dockerignore file
@@ -178,6 +195,8 @@ func (g *DockerfileGenerator) WriteCaddyfile(path string) error {
 type EntrypointData struct {
 	MaxDBWaitAttempts int
 	DBWaitInterval    int
+	// IsLaravel selects Laravel storage paths and the runtime optimize step.
+	IsLaravel bool
 }
 
 // DefaultEntrypointData returns entrypoint data with default values.
@@ -190,7 +209,9 @@ func DefaultEntrypointData() EntrypointData {
 
 // GenerateEntrypoint generates the docker-entrypoint.sh content
 func (g *DockerfileGenerator) GenerateEntrypoint() (string, error) {
-	return g.loader.Execute("docker-entrypoint.tmpl", DefaultEntrypointData())
+	data := DefaultEntrypointData()
+	data.IsLaravel = isLaravel(g.config.EffectiveFramework())
+	return g.loader.Execute("docker-entrypoint.tmpl", data)
 }
 
 // WriteEntrypoint writes the docker-entrypoint.sh file

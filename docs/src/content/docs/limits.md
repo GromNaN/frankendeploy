@@ -12,7 +12,8 @@ FrankenDeploy targets one common situation: a Symfony application, a VPS, a smal
 | **Servers per app** | One. No load balancing, no failover, no horizontal scaling | Kubernetes, a PaaS, or a container orchestrator with a real load balancer |
 | **Database** | One container on the same VPS, one volume, no replication, no automatic failover. Backups are dumps on the same disk | A managed database at your provider, and `database.managed: false` |
 | **Zero downtime** | For the application, through the container swap. Not for the database container itself (a PostgreSQL major upgrade stops it) | Plan database upgrades as maintenance |
-| **Framework** | Symfony (detection requires `symfony/framework-bundle`), PHP >= 8.2 as FrankenPHP requires | Other PHP frameworks may work with a hand-written `frankendeploy.yaml` and Dockerfile, untested |
+| **Framework** | Symfony (detection requires `symfony/framework-bundle`) and Laravel (detection requires `laravel/framework`), PHP >= 8.2 as FrankenPHP requires | Other PHP frameworks may work with a hand-written `frankendeploy.yaml` and Dockerfile, untested |
+| **Laravel worker mode** | The queue worker (`php artisan queue:work`) and the scheduler (`php artisan schedule:work`) run as containers. FrankenPHP worker mode is not supported: it needs Laravel Octane | Keep `frankenphp.worker: false` (the default for Laravel) |
 | **Server OS** | Ubuntu or Debian, `apt` based, x86_64 or arm64 | Anything else is refused by `server setup` on purpose |
 | **Client OS** | macOS, Linux, Windows (the CLI is a single binary) | |
 | **Ingress** | HTTP and HTTPS through Caddy. No raw TCP or UDP exposure of your containers (no public database port, no custom TCP service) | Publish it yourself with `docker run -p` outside FrankenDeploy |

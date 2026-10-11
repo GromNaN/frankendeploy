@@ -17,6 +17,7 @@ Example:
   frankendeploy logs production --tail 50
   frankendeploy logs production -f
   frankendeploy logs production --service=worker
+  frankendeploy logs production --service=scheduler
   frankendeploy logs production --service=all`,
 	Args: cobra.ExactArgs(1),
 	RunE: runLogs,
@@ -34,7 +35,7 @@ func init() {
 	logsCmd.Flags().BoolVarP(&logsFollow, "follow", "f", false, "Follow log output")
 	logsCmd.Flags().StringVar(&logsTail, "tail", "100", "Number of lines to show")
 	logsCmd.Flags().StringVar(&logsSince, "since", "", "Show logs since timestamp (e.g., 2h, 30m)")
-	logsCmd.Flags().StringVar(&logsService, "service", "app", "Service to show logs for (app, worker, all)")
+	logsCmd.Flags().StringVar(&logsService, "service", "app", "Service to show logs for (app, worker, scheduler, all)")
 }
 
 func runLogs(cmd *cobra.Command, args []string) error {
@@ -50,9 +51,9 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Validate service flag
-	validServices := map[string]bool{"app": true, "worker": true, "all": true}
+	validServices := map[string]bool{"app": true, "worker": true, "scheduler": true, "all": true}
 	if !validServices[logsService] {
-		return fmt.Errorf("invalid --service value: must be 'app', 'worker', or 'all'")
+		return fmt.Errorf("invalid --service value: must be 'app', 'worker', 'scheduler', or 'all'")
 	}
 
 	conn, err := ConnectToServer(serverName)
@@ -68,8 +69,10 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		containers = []string{conn.Project.Name}
 	case "worker":
 		containers = []string{fmt.Sprintf("%s-worker", conn.Project.Name)}
+	case "scheduler":
+		containers = []string{fmt.Sprintf("%s-scheduler", conn.Project.Name)}
 	case "all":
-		containers = []string{conn.Project.Name, fmt.Sprintf("%s-worker", conn.Project.Name)}
+		containers = []string{conn.Project.Name, fmt.Sprintf("%s-worker", conn.Project.Name), fmt.Sprintf("%s-scheduler", conn.Project.Name)}
 	}
 
 	// Show logs for each container

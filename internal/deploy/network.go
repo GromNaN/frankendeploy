@@ -63,7 +63,7 @@ func DetachFromSharedNetwork(ctx context.Context, client ssh.Executor, appName s
 	}
 	network := constants.AppNetworkName(appName)
 
-	for _, container := range []string{appName, appName + "-worker", appName + "-db"} {
+	for _, container := range []string{appName, appName + "-worker", appName + "-scheduler", appName + "-db"} {
 		networks, exists := containerNetworks(ctx, client, container)
 		if !exists || !contains(networks, constants.NetworkName) || !contains(networks, network) {
 			continue

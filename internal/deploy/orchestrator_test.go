@@ -37,6 +37,7 @@ func makeSteps(r *stepRecorder) Steps {
 		ShowContainerLogs:    func() { r.record("logs") },
 		SwapContainers:       func(oldExists bool) error { r.record("swap"); return nil },
 		DeployWorkers:        func() error { r.record("workers"); return nil },
+		DeployScheduler:      func() error { r.record("scheduler"); return nil },
 		IsolateNetwork:       func() { r.record("isolate-network") },
 		RunPostDeployHooks:   func() error { r.record("post-hooks"); return nil },
 		CaddyAppConfigExists: func() bool { r.record("caddy-exists"); return true },
@@ -56,7 +57,8 @@ func fullOptions() Options {
 		HasMigrationHook:   true,
 		BackupEligible:     true,
 		HasPostDeployHooks: true,
-		MessengerEnabled:   true,
+		WorkersEnabled:     true,
+		SchedulerEnabled:   true,
 		Domain:             "example.com",
 	}
 }
@@ -69,7 +71,7 @@ func TestRunPipeline_HappyPathOrder(t *testing.T) {
 		t.Fatalf("RunPipeline: %v", err)
 	}
 
-	want := []string{"prepare", "old-exists", "start", "backup", "pre-hooks", "migration-check", "health", "swap", "workers", "isolate-network", "post-hooks", "caddy-exists", "caddy", "cleanup"}
+	want := []string{"prepare", "old-exists", "start", "backup", "pre-hooks", "migration-check", "health", "swap", "workers", "scheduler", "isolate-network", "post-hooks", "caddy-exists", "caddy", "cleanup"}
 	got := strings.Join(r.calls, ",")
 	if got != strings.Join(want, ",") {
 		t.Errorf("unexpected step order:\n got %s\nwant %s", got, strings.Join(want, ","))
@@ -278,14 +280,15 @@ func TestRunPipeline_NoHooksSkipsBackupAndHooks(t *testing.T) {
 	opts := fullOptions()
 	opts.HasPreDeployHooks = false
 	opts.HasPostDeployHooks = false
-	opts.MessengerEnabled = false
+	opts.WorkersEnabled = false
+	opts.SchedulerEnabled = false
 
 	if err := RunPipeline(NewDeployState("myapp"), makeSteps(r), opts); err != nil {
 		t.Fatalf("RunPipeline: %v", err)
 	}
-	for _, forbidden := range []string{"backup", "pre-hooks", "post-hooks", "workers"} {
+	for _, forbidden := range []string{"backup", "pre-hooks", "post-hooks", "workers", "scheduler"} {
 		if r.called(forbidden) {
-			t.Errorf("step %q must not run without hooks/messenger", forbidden)
+			t.Errorf("step %q must not run without hooks/workers", forbidden)
 		}
 	}
 }

@@ -39,6 +39,12 @@ func LoadProjectConfig(path string) (*ProjectConfig, error) {
 
 	config.Database.Driver = NormalizeDBDriver(config.Database.Driver)
 
+	// Configurations written before Laravel support have no framework field:
+	// default them to Symfony so every downstream branch keeps its behavior.
+	if config.Framework == "" {
+		config.Framework = FrameworkSymfony
+	}
+
 	// Validate app name
 	if config.Name != "" {
 		if err := security.ValidateAppName(config.Name); err != nil {

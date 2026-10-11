@@ -27,6 +27,7 @@ type ComposerResult struct {
 	PHPVersionWarning string
 	Extensions        []string
 	HasSymfony        bool
+	HasLaravel        bool
 	Packages          map[string]string
 }
 
@@ -113,6 +114,12 @@ func (s *Scanner) ParseComposer() (*ComposerResult, error) {
 	// and many other projects too
 	if _, ok := composer.Require["symfony/framework-bundle"]; ok {
 		result.HasSymfony = true
+	}
+
+	// Check for Laravel: laravel/framework is the canonical marker, read
+	// from require only (a require-dev entry does not make an app Laravel)
+	if _, ok := composer.Require["laravel/framework"]; ok {
+		result.HasLaravel = true
 	}
 
 	// Extract PHP extensions, sorted: map order is random, and a changing

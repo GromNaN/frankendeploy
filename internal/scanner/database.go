@@ -47,6 +47,11 @@ func getSQLiteDirectory(path string) string {
 // DetectDatabase detects the database configuration from the project.
 // Returns the config, optional warning messages, and an error.
 func (s *Scanner) DetectDatabase() (*config.DatabaseConfig, []string, error) {
+	// Laravel has its own detection: DATABASE_URL then DB_CONNECTION.
+	if s.IsLaravelProject() {
+		return s.DetectLaravelDatabase()
+	}
+
 	dbConfig := &config.DatabaseConfig{}
 
 	// First, check doctrine.yaml for explicit driver

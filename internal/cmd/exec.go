@@ -15,6 +15,7 @@ var execCmd = &cobra.Command{
 
 Example:
   frankendeploy exec production php bin/console cache:clear
+  frankendeploy exec production php artisan migrate --force
   frankendeploy exec production composer install`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runExec,

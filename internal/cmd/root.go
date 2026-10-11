@@ -20,9 +20,9 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "frankendeploy",
-	Short: "Deploy Symfony applications with FrankenPHP",
-	Long: `FrankenDeploy is a CLI to deploy Symfony applications on VPS
-with FrankenPHP. It analyzes your project, generates Docker files
+	Short: "Deploy Symfony and Laravel applications with FrankenPHP",
+	Long: `FrankenDeploy is a CLI to deploy Symfony and Laravel applications on
+VPS with FrankenPHP. It analyzes your project, generates Docker files
 and orchestrates deployment.
 
 Quick start:

@@ -133,7 +133,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 	if deployRemoteBuild {
 		// Remote build: transfer source code and build on server
 		PrintInfo("Transferring source code to server...")
-		if err := transferSourceCode(ctx, client, projectCfg.Name, remoteAppPath); err != nil {
+		if err := transferSourceCode(ctx, client, projectCfg, remoteAppPath); err != nil {
 			return fmt.Errorf("transfer failed: %w\n\nRun 'frankendeploy doctor %s' to diagnose the server setup", err, serverName)
 		}
 		PrintSuccess("Source code transferred")
@@ -222,7 +222,7 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 			return runDeployHooks(ctx, client, state.TempContainerName, projectCfg.Deploy.Hooks.PreDeploy)
 		},
 		CheckMigrationState: func() {
-			checkAndWarnMigrationState(ctx, client, state.TempContainerName)
+			checkAndWarnMigrationState(ctx, client, projectCfg, state.TempContainerName)
 		},
 		HealthCheck: func() error {
 			return runHealthCheckOnContainer(ctx, client, projectCfg, state.TempContainerName)
@@ -234,7 +234,10 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 			return swapContainers(ctx, client, projectCfg.Name, remoteAppPath, deployTag, state.TempContainerName, oldExists)
 		},
 		DeployWorkers: func() error {
-			return deployMessengerWorkers(ctx, client, projectCfg, imageName, remoteAppPath, databaseURL)
+			return deployWorkers(ctx, client, projectCfg, imageName, remoteAppPath, databaseURL)
+		},
+		DeployScheduler: func() error {
+			return deployScheduler(ctx, client, projectCfg, imageName, remoteAppPath, databaseURL)
 		},
 		IsolateNetwork: func() {
 			deploy.DetachFromSharedNetwork(ctx, client, projectCfg.Name, cmdLogger{})
@@ -265,6 +268,10 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		WarnMigrationRollback: warnDatabaseMigrationRollback,
 	}
 
+	// The worker decision comes from the same function that builds the
+	// command, so the log line and the container can never disagree.
+	_, workersEnabled := workerCommand(projectCfg)
+
 	opts := deploy.Options{
 		Force:              deployForce,
 		SkipHealthcheck:    deploySkipHealthcheck,
@@ -272,7 +279,8 @@ func runDeploy(cmd *cobra.Command, args []string) error {
 		HasMigrationHook:   deploy.HasMigrationHook(projectCfg.Deploy.Hooks.PreDeploy),
 		BackupEligible:     projectCfg.Database.IsManaged() && databaseURL != "",
 		HasPostDeployHooks: len(projectCfg.Deploy.Hooks.PostDeploy) > 0,
-		MessengerEnabled:   projectCfg.Messenger.Enabled,
+		WorkersEnabled:     workersEnabled,
+		SchedulerEnabled:   projectCfg.EffectiveFramework() == config.FrameworkLaravel && projectCfg.Scheduler.Enabled,
 		Domain:             projectCfg.Deploy.Domain,
 		Logger:             cmdLogger{},
 	}
@@ -328,11 +336,21 @@ func buildDockerImage(imageName, platform string) error {
 	return dockerCmd.Run()
 }
 
-// sourceCodeExcludes lists what never belongs in the remote build context.
-// In a Git repository the file list comes from Git (see sourceFiles) and
-// these still apply on top; outside Git they are the only filter.
-var sourceCodeExcludes = []string{".git", "node_modules", "vendor", "var", ".env.local",
-	"config/secrets/prod/prod.decrypt.private.php"}
+// sourceCodeExcludes lists what never belongs in the remote build context for
+// the given framework. In a Git repository the file list comes from Git (see
+// sourceFiles) and these still apply on top; outside Git they are the only
+// filter.
+func sourceCodeExcludes(fw config.Framework) []string {
+	excludes := []string{".git", "node_modules", "vendor", "var", ".env.local",
+		"config/secrets/prod/prod.decrypt.private.php"}
+	if fw == config.FrameworkLaravel {
+		// Laravel's .env holds secrets and is never committed: it must not
+		// reach the server. Logs and the compiled package cache are runtime
+		// artifacts, rebuilt at boot.
+		excludes = append(excludes, ".env", "storage/logs", "bootstrap/cache")
+	}
+	return excludes
+}
 
 // transferImage uploads the locally built image over the existing SSH
 // connection (pure-Go SFTP: no scp binary, no second SSH handshake, works on
@@ -409,7 +427,7 @@ func saveImageCompressed(imageName, destPath string) error {
 // transferSourceCode uploads the project source into the remote build
 // directory over the existing SSH connection (pure-Go SFTP, no rsync
 // dependency — rsync does not exist on Windows).
-func transferSourceCode(ctx context.Context, client *ssh.Client, appName, appPath string) error {
+func transferSourceCode(ctx context.Context, client *ssh.Client, cfg *config.ProjectConfig, appPath string) error {
 	// Create a fresh build directory on the server (equivalent to the old
 	// rsync --delete into an empty target)
 	buildPath := fmt.Sprintf("%s/build", appPath)
@@ -426,7 +444,7 @@ func transferSourceCode(ctx context.Context, client *ssh.Client, appName, appPat
 	}
 
 	count, err := client.UploadDir(ctx, ".", buildPath, ssh.UploadDirOptions{
-		Exclude: sourceCodeExcludes,
+		Exclude: sourceCodeExcludes(cfg.EffectiveFramework()),
 		Files:   files,
 		Progress: func(uploaded int, currentFile string) {
 			PrintVerbose("  %s", currentFile)
@@ -516,9 +534,15 @@ func buildAppRunCommand(cfg *config.ProjectConfig, imageName, appPath, databaseU
 
 	volumeMounts := buildVolumeMounts(sharedPath, cfg.Deploy.EffectiveSharedDirs(), cfg.Deploy.EffectiveSharedFiles())
 
-	envVars := fmt.Sprintf("-e SERVER_NAME=:%s -e APP_ENV=prod -e APP_DEBUG=0", constants.AppPort)
+	envVars := fmt.Sprintf("-e SERVER_NAME=:%s -e APP_ENV=%s -e APP_DEBUG=%s",
+		constants.AppPort, appEnvValue(cfg), appDebugValue(cfg))
 	if databaseURL != "" {
 		envVars += fmt.Sprintf(" -e DATABASE_URL=%s", security.ShellEscape(databaseURL))
+	}
+	// Laravel reads DB_CONNECTION/DB_HOST/... instead of DATABASE_URL: inject
+	// them for a managed database container only.
+	for _, kv := range deploy.LaravelDatabaseEnvVars(cfg, databaseURL) {
+		envVars += " -e " + kv
 	}
 	for _, kv := range extraEnv {
 		envVars += " -e " + kv
@@ -544,26 +568,49 @@ func buildAppRunCommand(cfg *config.ProjectConfig, imageName, appPath, databaseU
 		%s`, containerName, constants.AppNetworkName(cfg.Name), constants.ContainerUser, constants.DockerLogOptions, limits, envVars, volumeMounts, imageName)
 }
 
-// trustedProxiesEnv returns the KEY=value pairs that make Symfony trust
+// trustedProxiesEnv returns the KEY=value pairs that make the framework trust
 // Caddy's X-Forwarded-* headers (real client IP, HTTPS scheme, Secure
 // cookies). SYMFONY_TRUSTED_PROXIES is read natively by Symfony >= 7.2;
 // TRUSTED_PROXIES covers apps that wired framework.trusted_proxies to it
-// themselves. A docker -e value overrides .env.local, so nothing is
-// injected when the user manages either variable there.
-func trustedProxiesEnv(ctx context.Context, client ssh.Executor, appName string) []string {
-	vars, err := deploy.ReadEnvVars(ctx, client, appName)
+// themselves. Laravel reads neither variable by default, so only
+// TRUSTED_PROXIES is injected and the app must wire it in bootstrap/app.php.
+// A docker -e value overrides .env.local, so nothing is injected when the
+// user manages the variable there.
+func trustedProxiesEnv(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig) []string {
+	vars, err := deploy.ReadEnvVars(ctx, client, cfg.Name)
 	if err == nil {
-		if _, ok := vars["SYMFONY_TRUSTED_PROXIES"]; ok {
-			return nil
-		}
 		if _, ok := vars["TRUSTED_PROXIES"]; ok {
 			return nil
 		}
+		if cfg.EffectiveFramework() != config.FrameworkLaravel {
+			if _, ok := vars["SYMFONY_TRUSTED_PROXIES"]; ok {
+				return nil
+			}
+		}
 	}
-	return []string{
-		"SYMFONY_TRUSTED_PROXIES=" + constants.TrustedProxies,
-		"TRUSTED_PROXIES=" + constants.TrustedProxies,
+
+	env := []string{"TRUSTED_PROXIES=" + constants.TrustedProxies}
+	if cfg.EffectiveFramework() != config.FrameworkLaravel {
+		env = append(env, "SYMFONY_TRUSTED_PROXIES="+constants.TrustedProxies)
 	}
+	return env
+}
+
+// appEnvValue returns the APP_ENV value injected into the app container:
+// Laravel's convention is "production", Symfony's is "prod".
+func appEnvValue(cfg *config.ProjectConfig) string {
+	if cfg.EffectiveFramework() == config.FrameworkLaravel {
+		return "production"
+	}
+	return "prod"
+}
+
+// appDebugValue returns the APP_DEBUG value injected into the app container.
+func appDebugValue(cfg *config.ProjectConfig) string {
+	if cfg.EffectiveFramework() == config.FrameworkLaravel {
+		return "false"
+	}
+	return "0"
 }
 
 // readSavedDatabaseURL reads the DATABASE_URL persisted by a managed-database
@@ -584,7 +631,7 @@ func startNewContainer(ctx context.Context, client ssh.Executor, cfg *config.Pro
 	// Remove any leftover temp container from a previous failed deploy
 	forceRemoveContainer(ctx, client, containerName)
 
-	extraEnv := trustedProxiesEnv(ctx, client, cfg.Name)
+	extraEnv := trustedProxiesEnv(ctx, client, cfg)
 	if mongoVar := deploy.ManagedMongoEnvVar(ctx, client, cfg, appPath); mongoVar != "" {
 		extraEnv = append(extraEnv, mongoVar)
 	}
@@ -947,42 +994,74 @@ func runDeployHooks(ctx context.Context, client ssh.Executor, containerName stri
 	return nil
 }
 
-// deployMessengerWorkers starts a Messenger worker container for the app.
-// Only a single worker container is started; multi-worker scaling is not
-// currently supported.
-func deployMessengerWorkers(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, imageName, appPath, databaseURL string) error {
-	workerName := fmt.Sprintf("%s-worker", cfg.Name)
+// workerCommand returns the command run in the background worker container and
+// whether a worker is needed at all. Symfony uses messenger:consume, Laravel
+// uses queue:work; the two flag families are never mixed.
+func workerCommand(cfg *config.ProjectConfig) (string, bool) {
+	if cfg.EffectiveFramework() == config.FrameworkLaravel {
+		if !cfg.Queue.Enabled {
+			return "", false
+		}
+		cmd := "php artisan queue:work --tries=3 --timeout=90 --max-time=3600 --memory=256 --verbose"
+		if len(cfg.Queue.Queues) > 0 {
+			cmd += " --queue=" + strings.Join(cfg.Queue.Queues, ",")
+		}
+		return cmd, true
+	}
 
-	// Build transports argument
+	if !cfg.Messenger.Enabled {
+		return "", false
+	}
 	transports := cfg.Messenger.Transports
 	if len(transports) == 0 {
 		transports = []string{"async"}
 	}
-	transportsArg := strings.Join(transports, " ")
+	return fmt.Sprintf("php bin/console messenger:consume %s --time-limit=3600 --memory-limit=256M -vv",
+		strings.Join(transports, " ")), true
+}
 
-	// Get shared dirs and files (same as main container)
+// deployWorkers starts the background worker container for the app. Only a
+// single worker container is started; multi-worker scaling is not currently
+// supported.
+func deployWorkers(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, imageName, appPath, databaseURL string) error {
+	command, enabled := workerCommand(cfg)
+	if !enabled {
+		return nil
+	}
+	return startBackgroundContainer(ctx, client, cfg, imageName, appPath, databaseURL, cfg.Name+"-worker", command)
+}
+
+// deployScheduler starts the Laravel scheduler container ("php artisan
+// schedule:work"). No-op when the scheduler is disabled.
+func deployScheduler(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, imageName, appPath, databaseURL string) error {
+	if !cfg.Scheduler.Enabled {
+		return nil
+	}
+	return startBackgroundContainer(ctx, client, cfg, imageName, appPath, databaseURL, cfg.Name+"-scheduler", "php artisan schedule:work")
+}
+
+// startBackgroundContainer runs a long-lived sidecar (worker or scheduler) from
+// the app image: same network, mounts, user and restart policy as the main
+// container, plus the database environment.
+func startBackgroundContainer(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, imageName, appPath, databaseURL, containerName, command string) error {
 	sharedPath := filepath.Join(appPath, "shared")
-	sharedDirs := cfg.Deploy.EffectiveSharedDirs()
-	sharedFiles := cfg.Deploy.EffectiveSharedFiles()
+	volumeMounts := buildVolumeMounts(sharedPath, cfg.Deploy.EffectiveSharedDirs(), cfg.Deploy.EffectiveSharedFiles())
 
-	// Build volume mounts (same as main container)
-	volumeMounts := buildVolumeMounts(sharedPath, sharedDirs, sharedFiles)
-
-	// Build environment variables
-	envVars := "-e APP_ENV=prod -e APP_DEBUG=0"
+	envVars := fmt.Sprintf("-e APP_ENV=%s -e APP_DEBUG=%s", appEnvValue(cfg), appDebugValue(cfg))
 	if databaseURL != "" {
 		envVars += fmt.Sprintf(" -e DATABASE_URL=%s", security.ShellEscape(databaseURL))
+	}
+	for _, kv := range deploy.LaravelDatabaseEnvVars(cfg, databaseURL) {
+		envVars += " -e " + kv
 	}
 	if mongoVar := deploy.ManagedMongoEnvVar(ctx, client, cfg, appPath); mongoVar != "" {
 		envVars += " -e " + mongoVar
 	}
 
-	// Stop existing workers
-	stopAndRemoveContainer(ctx, client, workerName)
+	stopAndRemoveContainer(ctx, client, containerName)
 
-	// Start worker container with messenger:consume command
 	// SECURITY: Run as non-root user
-	workerCmd := fmt.Sprintf(`docker run -d --name %s \
+	runCmd := fmt.Sprintf(`docker run -d --name %s \
 		--network %s \
 		--restart unless-stopped \
 		--user %s \
@@ -990,15 +1069,15 @@ func deployMessengerWorkers(ctx context.Context, client ssh.Executor, cfg *confi
 		%s \
 		%s \
 		%s \
-		php bin/console messenger:consume %s --time-limit=3600 --memory-limit=256M -vv`,
-		workerName, constants.AppNetworkName(cfg.Name), constants.ContainerUser, constants.DockerLogOptions, envVars, volumeMounts, imageName, transportsArg)
+		%s`,
+		containerName, constants.AppNetworkName(cfg.Name), constants.ContainerUser, constants.DockerLogOptions, envVars, volumeMounts, imageName, command)
 
-	result, err := client.Exec(ctx, workerCmd)
+	result, err := client.Exec(ctx, runCmd)
 	if err != nil {
-		return fmt.Errorf("failed to start worker: %w", err)
+		return fmt.Errorf("failed to start %s: %w", containerName, err)
 	}
 	if err := result.Err(); err != nil {
-		return fmt.Errorf("failed to start worker: %w", err)
+		return fmt.Errorf("failed to start %s: %w", containerName, err)
 	}
 
 	return nil
@@ -1113,13 +1192,17 @@ func handleInteractiveEnvCheck(ctx context.Context, client ssh.Executor, cfg *co
 }
 
 // checkAndWarnMigrationState checks for empty migrations and warns once per app
-func checkAndWarnMigrationState(ctx context.Context, client ssh.Executor, appName string) {
+func checkAndWarnMigrationState(ctx context.Context, client ssh.Executor, cfg *config.ProjectConfig, containerName string) {
 	// Check migration state inside the container
-	result, err := deploy.CheckMigrationState(ctx, client, appName)
+	result, err := deploy.CheckMigrationState(ctx, client, containerName, cfg.EffectiveFramework())
 	if err != nil {
 		PrintVerbose("Could not check migration state: %v", err)
 		return
 	}
+
+	// The marker is per app, not per container: the temp container is renamed
+	// to the app name on swap.
+	appName := cfg.Name
 
 	// If migrations now exist, clear any previous warning marker
 	if result.MigrationFilesCount > 0 {
@@ -1140,7 +1223,7 @@ func checkAndWarnMigrationState(ctx context.Context, client ssh.Executor, appNam
 
 	// Show the warning
 	fmt.Println()
-	PrintWarning(deploy.FormatMigrationWarning(result))
+	PrintWarning(deploy.FormatMigrationWarning(result, cfg.EffectiveFramework()))
 
 	// Mark warning as shown so we don't repeat it
 	if err := deploy.MarkMigrationWarningShown(ctx, client, appName); err != nil {

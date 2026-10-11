@@ -41,8 +41,11 @@ type Steps struct {
 	ShowContainerLogs func()
 	// SwapContainers promotes the new container to the live name.
 	SwapContainers func(oldExists bool) error
-	// DeployWorkers starts the Messenger worker container.
+	// DeployWorkers starts the background worker container (Symfony Messenger
+	// or Laravel queue).
 	DeployWorkers func() error
+	// DeployScheduler starts the Laravel scheduler container (optional).
+	DeployScheduler func() error
 	// IsolateNetwork detaches the app containers from the shared network once
 	// the old container is gone (optional, best-effort).
 	IsolateNetwork func()
@@ -69,7 +72,8 @@ type Options struct {
 	// BackupEligible is true for a managed database with a known URL.
 	BackupEligible     bool
 	HasPostDeployHooks bool
-	MessengerEnabled   bool
+	WorkersEnabled     bool
+	SchedulerEnabled   bool
 	Domain             string
 	Logger             Logger
 }
@@ -185,13 +189,23 @@ func RunPipeline(state *DeployState, steps Steps, opts Options) error {
 		return fmt.Errorf("swap failed: %w", err)
 	}
 
-	// Step 8b: Messenger worker
-	if opts.MessengerEnabled {
-		log.Info("Starting Messenger worker...")
+	// Step 8b: background worker
+	if opts.WorkersEnabled {
+		log.Info("Starting background worker...")
 		if err := steps.DeployWorkers(); err != nil {
-			log.Warning("Failed to start Messenger worker: %v", err)
+			log.Warning("Failed to start background worker: %v", err)
 		} else {
-			log.Success("Messenger worker started")
+			log.Success("Background worker started")
+		}
+	}
+
+	// Step 8b-2: Laravel scheduler
+	if opts.SchedulerEnabled && steps.DeployScheduler != nil {
+		log.Info("Starting scheduler...")
+		if err := steps.DeployScheduler(); err != nil {
+			log.Warning("Failed to start scheduler: %v", err)
+		} else {
+			log.Success("Scheduler started")
 		}
 	}
 

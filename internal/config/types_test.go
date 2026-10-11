@@ -69,6 +69,27 @@ func TestEffectiveSharedDirs(t *testing.T) {
 	}
 }
 
+func TestEffectiveFramework(t *testing.T) {
+	tests := []struct {
+		name      string
+		framework Framework
+		expected  Framework
+	}{
+		{"empty defaults to symfony", "", FrameworkSymfony},
+		{"explicit symfony", FrameworkSymfony, FrameworkSymfony},
+		{"explicit laravel", FrameworkLaravel, FrameworkLaravel},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &ProjectConfig{Framework: tt.framework}
+			if got := cfg.EffectiveFramework(); got != tt.expected {
+				t.Errorf("EffectiveFramework() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestEffectiveSharedFiles(t *testing.T) {
 	tests := []struct {
 		name     string

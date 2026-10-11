@@ -2,7 +2,7 @@
 
 # FrankenDeploy
 
-### Deploy Symfony apps like a pro
+### Deploy Symfony and Laravel apps like a pro
 
 [![GitHub stars](https://img.shields.io/github/stars/yoanbernabeu/frankendeploy?style=flat&logo=github)](https://github.com/yoanbernabeu/frankendeploy/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yoanbernabeu/frankendeploy/total?style=flat&logo=github)](https://github.com/yoanbernabeu/frankendeploy/releases)
@@ -18,7 +18,7 @@
 
 ---
 
-`frankendeploy` is a CLI that deploys Symfony applications to any VPS. It auto-detects your project configuration, generates optimized Docker files, and handles the entire deployment pipeline—SSL, health checks, rollbacks included.
+`frankendeploy` is a CLI that deploys Symfony and Laravel applications to any VPS. It auto-detects your project configuration, generates optimized Docker files, and handles the entire deployment pipeline: SSL, health checks and rollbacks included.
 
 **Built on FrankenPHP**, the modern PHP app server by Kévin Dunglas.
 
@@ -26,7 +26,7 @@
 
 ## Features
 
-- **Zero config** — Auto-detects PHP version, extensions, database, assets, Messenger, worker mode
+- **Zero config** — Auto-detects PHP version, extensions, database, assets, Messenger, Laravel queues and scheduler, worker mode
 - **One command deploy** — `frankendeploy deploy prod` and you're live
 - **Automatic HTTPS** — Let's Encrypt certificates via Caddy
 - **Zero downtime** — Blue-green deployments with health checks; a failed deploy never takes the site down
@@ -58,7 +58,7 @@ go install github.com/yoanbernabeu/frankendeploy/cmd/frankendeploy@latest
 ## Quick Start
 
 ```bash
-# In your Symfony project
+# In your Symfony or Laravel project
 frankendeploy init --domain my-app.com                # Analyze & configure
 
 # Prepare your server (one-time)

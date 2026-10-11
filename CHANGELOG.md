@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Laravel support**: `init` detects a Laravel project (`laravel/framework`, or `artisan` plus `bootstrap/app.php`), writes `framework: laravel`, and generates a Dockerfile, entrypoint, compose files and `.dockerignore` built around `php artisan`. Storage directories (`storage/app`, `storage/framework/cache`, `storage/framework/sessions`, `storage/logs`) and `.env` are shared between releases; `bootstrap/cache` and `storage/framework/views` are not. The database is detected from `DATABASE_URL` or `DB_CONNECTION`, `APP_KEY` is generated when missing, and migrations run through the `php artisan migrate --force` hook. A queue worker (`php artisan queue:work`, from `QUEUE_CONNECTION` or `laravel/horizon`) and a scheduler (`php artisan schedule:work`, from `withSchedule`/`Schedule::`) run as containers next to the app. An existing configuration without a `framework` field is treated as Symfony: no behavior changes for Symfony projects. FrankenPHP worker mode is not supported for Laravel (it needs Octane) and `build` says so - @GromNaN
+
 ## [0.17.0] - 2026-09-29
 
 MongoDB joins as a service, in its own `mongodb:` section next to `database:`. Doctrine MongoDB ODM or the `mongodb` library is detected by `init`, runs locally as a single-node replica set, and connects in production either to an external cluster such as Atlas or to a container FrankenDeploy provisions.

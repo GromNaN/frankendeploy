@@ -23,13 +23,35 @@ services:
       SERVER_NAME: ":{{ appPort }}"
 {{- end }}
 {{- if not (index .Env.Prod "APP_ENV") }}
-      APP_ENV: prod
+      APP_ENV: {{ if .IsLaravel }}production{{ else }}prod{{ end }}
 {{- end }}
 {{- if not (index .Env.Prod "APP_DEBUG") }}
-      APP_DEBUG: "0"
+      APP_DEBUG: {{ if .IsLaravel }}"false"{{ else }}"0"{{ end }}
+{{- end }}
+{{- if and .IsLaravel .ManagedDatabase .DBConnection (not (index .Env.Prod "DB_CONNECTION")) }}
+      DB_CONNECTION: "{{ .DBConnection }}"
+{{- end }}
+{{- if and .IsLaravel .ManagedDatabase .DBHost (not (index .Env.Prod "DB_HOST")) }}
+      DB_HOST: "{{ .DBHost }}"
+{{- end }}
+{{- if and .IsLaravel .ManagedDatabase .DBPort (not (index .Env.Prod "DB_PORT")) }}
+      DB_PORT: "{{ .DBPort }}"
+{{- end }}
+{{- if and .IsLaravel .ManagedDatabase (not (index .Env.Prod "DB_DATABASE")) }}
+      DB_DATABASE: "${DATABASE_NAME:-{{ .Name }}}"
+{{- end }}
+{{- if and .IsLaravel .ManagedDatabase (not (index .Env.Prod "DB_USERNAME")) }}
+      DB_USERNAME: "${DATABASE_USER:-{{ .Name }}}"
+{{- end }}
+{{- if and .IsLaravel .ManagedDatabase (not (index .Env.Prod "DB_PASSWORD")) }}
+      DB_PASSWORD: "${DATABASE_PASSWORD:?DATABASE_PASSWORD is required}"
 {{- end }}
 {{- if .Database.Driver }}
+{{- if .IsLaravel }}
+      # DATABASE_URL and DB_*: Set via .env on the server
+{{- else }}
       # DATABASE_URL: Set via .env.local on the server
+{{- end }}
 {{- end }}
 {{- if .Env.Prod }}
 {{- range $key, $value := .Env.Prod }}

@@ -29,9 +29,11 @@ const (
 // TrustedProxies is the value injected as SYMFONY_TRUSTED_PROXIES and
 // TRUSTED_PROXIES into the app container when the user set neither: the
 // app only receives traffic from Caddy, over its private per-app network,
-// and Symfony must trust Caddy's X-Forwarded-* headers to see the real
+// and the framework must trust Caddy's X-Forwarded-* headers to see the real
 // client IP and the HTTPS scheme. Explicit CIDRs rather than the
-// PRIVATE_SUBNETS keyword: they work on every Symfony version.
+// PRIVATE_SUBNETS keyword: they work on every Symfony version. Laravel does
+// not read either variable by default: it only receives TRUSTED_PROXIES and
+// the app must wire it in bootstrap/app.php (see the docs).
 const TrustedProxies = "127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 // Health check defaults

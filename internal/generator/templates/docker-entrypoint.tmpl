@@ -82,6 +82,7 @@ wait_for_database() {
 }
 
 # Restore pre-built assets from Docker image (for volume mounts in dev)
+{{- if not .IsLaravel }}
 restore_assets() {
     if [ -d /app-assets ]; then
         if [ ! -d /app/var/sass ] && [ -d /app-assets/sass ]; then
@@ -96,26 +97,55 @@ restore_assets() {
         fi
     fi
 }
+{{- end }}
 
-# Fix permissions for var directory
+# Fix permissions for writable directories
 fix_permissions() {
+{{- if .IsLaravel }}
+    if [ -d /app/storage ]; then
+        chmod -R 775 /app/storage 2>/dev/null || true
+    fi
+    if [ -d /app/bootstrap/cache ]; then
+        chmod -R 775 /app/bootstrap/cache 2>/dev/null || true
+    fi
+{{- else }}
     if [ -d /app/var ]; then
         chmod -R 775 /app/var 2>/dev/null || true
     fi
+{{- end }}
 }
+
+{{- if .IsLaravel }}
+
+# Warm the application cache (production only, Laravel)
+optimize_app() {
+    # config:cache must run at container start, not at image build: it bakes
+    # the runtime env (mounted .env / Docker environment variables). A failure
+    # (bad template, missing APP_KEY) must not stop the app from booting.
+    if ! php artisan optimize; then
+        log_warn "php artisan optimize failed, continuing without a warmed cache"
+    fi
+}
+{{- end }}
 
 # Main
 main() {
     cd /app
 
-    if [ "$APP_ENV" = "dev" ]; then
+    # Laravel uses APP_ENV=local in development; Symfony uses "dev"
+    if [ "$APP_ENV" = "dev" ] || [ "$APP_ENV" = "local" ]; then
         log_info "Starting in DEVELOPMENT mode"
         fix_permissions
+{{- if not .IsLaravel }}
         restore_assets
+{{- end }}
         wait_for_database
     else
         log_info "Starting in PRODUCTION mode"
         wait_for_database
+{{- if .IsLaravel }}
+        optimize_app
+{{- end }}
     fi
 
     log_info "Starting FrankenPHP..."

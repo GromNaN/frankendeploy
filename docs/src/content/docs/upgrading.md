@@ -18,6 +18,10 @@ Nothing is installed on the server for FrankenDeploy itself: the CLI runs everyt
 
 FrankenDeploy never changes a running application by itself. Changes of behaviour land on your server at your next `deploy` (or `rollback`, or `env --reload`), and are designed to be transparent. Here is what to expect, most recent first.
 
+### Unreleased
+
+**Laravel support.** FrankenDeploy now deploys Laravel projects as well as Symfony ones. `init` detects the framework and writes `framework: laravel` in `frankendeploy.yaml`. Nothing changes for a Symfony project: a configuration without a `framework` field is still treated as Symfony, and the generated files are identical. A Laravel project gets a Dockerfile built around `php artisan`, Laravel storage directories as shared paths, `APP_KEY` handling, a `php artisan migrate --force` hook, and optional queue worker and scheduler containers. See [frankendeploy.yaml](/frankendeploy/config/project/) and [Workers & Scheduled Tasks](/frankendeploy/guides/workers/#laravel).
+
 ### 0.16
 
 **Symfony trusts Caddy.** The app container now receives `SYMFONY_TRUSTED_PROXIES` and `TRUSTED_PROXIES` set to the private subnets. Symfony 7.2+ picks it up without configuration: absolute URLs switch to `https://`, session cookies get the `Secure` flag, the client IP becomes the visitor's. If you already defined either variable with `env set`, nothing changes. If your app is older than Symfony 7.2 and had no `framework.trusted_proxies`, add the wiring shown in [Behind the Proxy](/frankendeploy/guides/deployment/#behind-the-proxy) to benefit.

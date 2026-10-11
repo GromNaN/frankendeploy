@@ -1,19 +1,42 @@
 package config
 
+// Framework identifies the PHP application framework FrankenDeploy targets.
+// The zero value is treated as FrameworkSymfony for backward compatibility.
+type Framework string
+
+const (
+	// FrameworkSymfony is the Symfony framework.
+	FrameworkSymfony Framework = "symfony"
+	// FrameworkLaravel is the Laravel framework.
+	FrameworkLaravel Framework = "laravel"
+)
+
 // ProjectConfig represents the frankendeploy.yaml configuration
 type ProjectConfig struct {
 	Name              string           `yaml:"name"`
+	Framework         Framework        `yaml:"framework,omitempty"`
 	FrankenPHPVersion string           `yaml:"frankenphp_version,omitempty"`
 	FrankenPHP        FrankenPHPConfig `yaml:"frankenphp,omitempty"`
 	PHP               PHPConfig        `yaml:"php"`
 	Database          DatabaseConfig   `yaml:"database,omitempty"`
 	Assets            AssetsConfig     `yaml:"assets,omitempty"`
 	Messenger         MessengerConfig  `yaml:"messenger,omitempty"`
+	Queue             QueueConfig      `yaml:"queue,omitempty"`
+	Scheduler         SchedulerConfig  `yaml:"scheduler,omitempty"`
 	Mailer            MailerConfig     `yaml:"mailer,omitempty"`
 	MongoDB           MongoConfig      `yaml:"mongodb,omitempty"`
 	Dockerfile        DockerfileConfig `yaml:"dockerfile,omitempty"`
 	Deploy            DeployConfig     `yaml:"deploy,omitempty"`
 	Env               EnvConfig        `yaml:"env,omitempty"`
+}
+
+// EffectiveFramework returns the configured framework, defaulting to Symfony
+// when the field is empty (configurations written before Laravel support).
+func (c *ProjectConfig) EffectiveFramework() Framework {
+	if c.Framework == "" {
+		return FrameworkSymfony
+	}
+	return c.Framework
 }
 
 // FrankenPHPConfig holds FrankenPHP runtime options.
@@ -74,6 +97,25 @@ type AssetsConfig struct {
 type MessengerConfig struct {
 	Enabled    bool     `yaml:"enabled,omitempty"`
 	Transports []string `yaml:"transports,omitempty"`
+}
+
+// QueueConfig holds the Laravel queue worker configuration. Laravel uses a
+// connection (database, redis, ...) rather than transports, and the worker
+// runs `php artisan queue:work`. Symfony keeps MessengerConfig.
+type QueueConfig struct {
+	Enabled bool `yaml:"enabled,omitempty"`
+	// Connection is the queue connection (database, redis, sqs, ...). A
+	// "sync" connection runs jobs inline and needs no worker container.
+	Connection string `yaml:"connection,omitempty"`
+	// Queues are the queue names to consume, passed as `--queue=a,b`. Empty
+	// means the default queue.
+	Queues []string `yaml:"queues,omitempty"`
+}
+
+// SchedulerConfig holds the Laravel scheduler configuration. When enabled, a
+// dedicated container runs `php artisan schedule:work`.
+type SchedulerConfig struct {
+	Enabled bool `yaml:"enabled,omitempty"`
 }
 
 // MailerConfig holds Symfony Mailer configuration
@@ -209,13 +251,23 @@ type ScanResult struct {
 	// MessengerTransports are the transports to consume, read from
 	// messenger.yaml (failure and sync transports excluded).
 	MessengerTransports []string
-	Framework           string
+	// HasQueue is true when a Laravel queue connection other than "sync" is
+	// configured (or laravel/horizon is installed): a worker container runs
+	// `php artisan queue:work`.
+	HasQueue bool
+	// QueueConnection is the Laravel queue connection name (database, redis,
+	// sqs, ...).
+	QueueConnection string
+	// HasLaravelScheduler is true when the Laravel scheduler defines tasks.
+	HasLaravelScheduler bool
+	Framework           Framework
 	Warnings            []string
 }
 
 // DefaultProjectConfig returns a default project configuration
 func DefaultProjectConfig() *ProjectConfig {
 	return &ProjectConfig{
+		Framework: FrameworkSymfony,
 		PHP: PHPConfig{
 			Version: "8.3",
 			Extensions: []string{

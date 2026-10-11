@@ -28,12 +28,18 @@ services:
       SERVER_NAME: "${SERVER_NAME:-localhost, :{{ appPort }}}"
 {{- end }}
 {{- if not (index .Env.Dev "APP_ENV") }}
-      APP_ENV: dev
+      APP_ENV: {{ if .IsLaravel }}local{{ else }}dev{{ end }}
 {{- end }}
 {{- if not (index .Env.Dev "APP_DEBUG") }}
       APP_DEBUG: "1"
 {{- end }}
-{{- if and .Database.Driver (not (index .Env.Dev "DATABASE_URL")) }}
+{{- if and .IsLaravel .DBConnection (not (index .Env.Dev "DB_CONNECTION")) }}
+      DB_CONNECTION: "{{ .DBConnection }}"
+{{- end }}
+{{- if and .IsLaravel (eq .Database.Driver "sqlite") (not (index .Env.Dev "DB_DATABASE")) }}
+      DB_DATABASE: "/app/{{ .LaravelSQLitePath }}"
+{{- end }}
+{{- if and .Database.Driver .DatabaseURL (not (index .Env.Dev "DATABASE_URL")) }}
       DATABASE_URL: "{{ yamlEscape .DatabaseURL }}"
 {{- end }}
 {{- if .Env.Dev }}
@@ -138,7 +144,7 @@ services:
       - "8025:8025"
 {{- end }}
 
-{{- if .HasMessenger }}
+{{- if and .HasMessenger (not .IsLaravel) }}
 
   rabbitmq:
     image: rabbitmq:4-management-alpine

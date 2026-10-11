@@ -80,3 +80,45 @@ frankendeploy exec prod php bin/console messenger:failed:retry
 ## Without a worker
 
 Leave `messenger.enabled: false`: no container is started. Scheduled tasks then have nothing to run them; use the host cron above, or enable the worker.
+
+## Laravel
+
+Laravel has the same two needs: **queues** for asynchronous jobs, the **scheduler** for recurring tasks. `frankendeploy init` detects both from `.env` (or `.env.example` when `.env` is not committed) and from your code.
+
+### Queue worker
+
+When `QUEUE_CONNECTION` is set to anything other than `sync`, or when `laravel/horizon` is installed, `init` writes:
+
+```yaml
+queue:
+  enabled: true
+  connection: redis
+  queues: []        # optional: --queue=high,default
+```
+
+Each deploy starts one container, `<app>-worker`, from the same image as the app, with the same mounts and database environment:
+
+```
+php artisan queue:work --tries=3 --timeout=90 --max-time=3600 --memory=256 --verbose
+```
+
+- `--max-time=3600` and `--memory=256` make the worker exit cleanly every hour or when it grows; Docker's `restart: unless-stopped` starts it again, so no leak survives an hour.
+- Set `queue.queues` to a list to consume specific queues; the values are joined into `--queue=high,default`.
+- The worker is stopped and recreated **after** the traffic switch of a deploy, so it never runs code older than the app. `rollback` does the same with the rolled-back image.
+- `pcntl` is added to the PHP extensions by `init`, so the worker finishes its current job before stopping.
+
+### Scheduler
+
+When `init` finds `->withSchedule()` in `bootstrap/app.php`, `Schedule::` in `routes/console.php`, or `$schedule` in `app/Console/Kernel.php`, it writes:
+
+```yaml
+scheduler:
+  enabled: true
+```
+
+Each deploy starts one container, `<app>-scheduler`, running `php artisan schedule:work`. It uses the same image, mounts and environment as the worker, and is recreated on deploy and rollback next to it. Without this container, tasks declared in your application never run on the server.
+
+```bash
+frankendeploy logs prod --service worker        # queue worker logs
+frankendeploy logs prod --service all -f        # app, worker and scheduler together
+```

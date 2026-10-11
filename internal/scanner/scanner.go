@@ -26,11 +26,17 @@ func New(projectPath string) *Scanner {
 func (s *Scanner) Scan() (*config.ScanResult, error) {
 	result := &config.ScanResult{}
 
-	// Check if it's a Symfony project
-	if !s.IsSymfonyProject() {
-		return nil, fmt.Errorf("not a Symfony project (composer.json not found or symfony/framework-bundle missing)")
+	// Resolve the framework: Symfony is proven by symfony/framework-bundle,
+	// Laravel by laravel/framework (or artisan + bootstrap/app.php).
+	switch {
+	case s.IsSymfonyProject():
+		result.Framework = config.FrameworkSymfony
+		result.IsSymfony = true
+	case s.IsLaravelProject():
+		result.Framework = config.FrameworkLaravel
+	default:
+		return nil, fmt.Errorf("not a Symfony or Laravel project (composer.json not found, or neither symfony/framework-bundle nor laravel/framework present)")
 	}
-	result.IsSymfony = true
 
 	// Parse composer.json
 	composer, err := s.ParseComposer()
@@ -40,19 +46,18 @@ func (s *Scanner) Scan() (*config.ScanResult, error) {
 
 	result.PHPVersion = composer.PHPVersion
 	result.PHPExtensions = composer.Extensions
-	result.Framework = "symfony"
 	if composer.PHPVersionWarning != "" {
 		result.Warnings = append(result.Warnings, composer.PHPVersionWarning)
 	}
 
-	// Detect database
+	// Detect database (framework-aware)
 	dbConfig, dbWarnings, err := s.DetectDatabase()
 	if err == nil && dbConfig != nil {
 		result.Database = *dbConfig
 	}
 	result.Warnings = append(result.Warnings, dbWarnings...)
 
-	// Detect assets
+	// Detect assets (shared: Vite and Webpack are used by both frameworks)
 	assetsConfig, err := s.DetectAssets()
 	if err == nil && assetsConfig != nil {
 		result.Assets = *assetsConfig
@@ -62,49 +67,65 @@ func (s *Scanner) Scan() (*config.ScanResult, error) {
 		}
 	}
 
-	// Detect Symfony components
-	result.HasDoctrine = s.HasDoctrine()
-	result.HasMigrations = composer.HasPackage("doctrine/doctrine-migrations-bundle")
-	result.HasMessenger = s.HasMessenger()
-	result.HasMailer = s.HasMailer()
+	// MongoDB detection is framework-neutral (Doctrine ODM, the mongodb
+	// library or mongodb/laravel-mongodb).
 	result.HasMongoDB = s.HasMongoDB()
-	result.HasScheduler = composer.HasPackage("symfony/scheduler")
 
 	// Resolve the real Messenger transports instead of guessing "async":
 	// a wrong transport name means a crash-looping worker in production
 	var messengerInfo messengerTransportInfo
-	if result.HasMessenger {
-		env, _ := s.GetMergedEnv()
-		messengerInfo = s.detectMessengerTransports(env)
-		result.MessengerTransports = messengerInfo.Transports
-		if len(messengerInfo.Transports) > 0 {
+	if result.Framework == config.FrameworkLaravel {
+		result.HasQueue, result.QueueConnection = s.DetectLaravelQueue()
+		if result.HasQueue {
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("Messenger: worker will consume transports [%s] (read from messenger.yaml)",
-					strings.Join(messengerInfo.Transports, ", ")))
-		} else {
-			result.Warnings = append(result.Warnings,
-				"messenger.yaml found but no async transport to consume: no worker container will run")
+				fmt.Sprintf("Laravel queue connection %q detected: a worker container will run 'php artisan queue:work'", result.QueueConnection))
 		}
-	}
-	if result.HasScheduler {
-		result.Warnings = append(result.Warnings,
-			"symfony/scheduler detected: a worker will consume scheduler_default so scheduled tasks actually run in production")
-	}
-	// api-platform/core (v2/v3) or api-platform/symfony (v4 split packages)
-	result.HasAPIPlatform = composer.HasAnyPackage("api-platform/core", "api-platform/symfony")
+		result.HasLaravelScheduler = s.HasLaravelScheduler()
+		if result.HasLaravelScheduler {
+			result.Warnings = append(result.Warnings,
+				"Laravel scheduled tasks detected: a scheduler container will run 'php artisan schedule:work'")
+		}
+	} else {
+		// Detect Symfony components
+		result.HasDoctrine = s.HasDoctrine()
+		result.HasMigrations = composer.HasPackage("doctrine/doctrine-migrations-bundle")
+		result.HasMessenger = s.HasMessenger()
+		result.HasMailer = s.HasMailer()
+		result.HasScheduler = composer.HasPackage("symfony/scheduler")
 
-	// FrankenPHP worker mode eligibility: symfony/runtime >= 7.4 ships the
-	// worker runner natively, runtime/frankenphp-symfony is the historical way
-	result.HasFrankenPHPRuntime = composer.HasFrankenPHPWorkerRuntime()
-	if result.HasFrankenPHPRuntime {
-		source := "symfony/runtime >= 7.4"
-		if composer.HasLegacyFrankenPHPRuntime() {
-			source = "runtime/frankenphp-symfony"
+		if result.HasMessenger {
+			env, _ := s.GetMergedEnv()
+			messengerInfo = s.detectMessengerTransports(env)
+			result.MessengerTransports = messengerInfo.Transports
+			if len(messengerInfo.Transports) > 0 {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("Messenger: worker will consume transports [%s] (read from messenger.yaml)",
+						strings.Join(messengerInfo.Transports, ", ")))
+			} else {
+				result.Warnings = append(result.Warnings,
+					"messenger.yaml found but no async transport to consume: no worker container will run")
+			}
 		}
-		result.Warnings = append(result.Warnings,
-			source+" detected: enabling FrankenPHP worker mode (frankenphp.worker: true in frankendeploy.yaml). "+
-				"Worker mode keeps the Symfony kernel in memory between requests — the app must be stateless. "+
-				"Set frankenphp.worker: false to opt out")
+		if result.HasScheduler {
+			result.Warnings = append(result.Warnings,
+				"symfony/scheduler detected: a worker will consume scheduler_default so scheduled tasks actually run in production")
+		}
+		// api-platform/core (v2/v3) or api-platform/symfony (v4 split packages)
+		result.HasAPIPlatform = composer.HasAnyPackage("api-platform/core", "api-platform/symfony")
+
+		// FrankenPHP worker mode eligibility: symfony/runtime >= 7.4 ships the
+		// worker runner natively, runtime/frankenphp-symfony is the historical way
+		result.HasFrankenPHPRuntime = composer.HasFrankenPHPWorkerRuntime()
+		if result.HasFrankenPHPRuntime {
+			source := "symfony/runtime >= 7.4"
+			if composer.HasLegacyFrankenPHPRuntime() {
+				source = "runtime/frankenphp-symfony"
+			}
+			result.Warnings = append(result.Warnings,
+				source+" detected: enabling FrankenPHP worker mode (frankenphp.worker: true in frankendeploy.yaml). "+
+					"Worker mode keeps the Symfony kernel in memory between requests — the app must be stateless. "+
+					"Set frankenphp.worker: false to opt out")
+		}
 	}
 
 	// Add required extensions based on detected features
@@ -271,12 +292,19 @@ func (s *Scanner) enhanceExtensions(extensions []string, result *config.ScanResu
 		result.Warnings = append(result.Warnings, "adding PHP extension redis (redis:// Messenger transport detected)")
 	}
 
-	// pcntl lets messenger:consume shut down gracefully on SIGTERM during
-	// deployments instead of dying mid-message
-	if result.HasMessenger && !extMap["pcntl"] {
+	// Laravel queue on redis needs the redis extension too
+	if result.HasQueue && result.QueueConnection == "redis" && !extMap["redis"] {
+		extensions = append(extensions, "redis")
+		extMap["redis"] = true
+		result.Warnings = append(result.Warnings, "adding PHP extension redis (Laravel queue connection redis detected)")
+	}
+
+	// pcntl lets the worker (messenger:consume or queue:work) shut down
+	// gracefully on SIGTERM during deployments instead of dying mid-message
+	if (result.HasMessenger || result.HasQueue) && !extMap["pcntl"] {
 		extensions = append(extensions, "pcntl")
 		extMap["pcntl"] = true
-		result.Warnings = append(result.Warnings, "adding PHP extension pcntl (graceful Messenger worker shutdown)")
+		result.Warnings = append(result.Warnings, "adding PHP extension pcntl (graceful worker shutdown)")
 	}
 
 	// Deduplicate while preserving order
@@ -296,53 +324,81 @@ func (s *Scanner) enhanceExtensions(extensions []string, result *config.ScanResu
 func (s *Scanner) ToProjectConfig(result *config.ScanResult, name string) *config.ProjectConfig {
 	cfg := config.DefaultProjectConfig()
 	cfg.Name = name
+	cfg.Framework = result.Framework
 	cfg.PHP.Version = result.PHPVersion
 	cfg.PHP.Extensions = result.PHPExtensions
 	cfg.Database = result.Database
 	cfg.Assets = result.Assets
 
-	// A pure API Platform app typically returns 404 on "/" in prod, which
-	// would fail the deploy health check: default to the API entrypoint.
-	if result.HasAPIPlatform {
-		cfg.Deploy.HealthcheckPath = "/api"
+	if result.Framework == config.FrameworkLaravel {
+		// Laravel storage conventions. bootstrap/cache and
+		// storage/framework/views are deliberately NOT shared: they hold
+		// config/route/view caches that must come from the new image, or a
+		// new release would boot on the previous release's cached config.
+		cfg.Deploy.SharedDirs = []string{
+			"storage/app",
+			"storage/framework/cache",
+			"storage/framework/sessions",
+			"storage/logs",
+		}
+		cfg.Deploy.SharedFiles = []string{".env"}
+
+		if result.HasQueue {
+			cfg.Queue = config.QueueConfig{Enabled: true, Connection: result.QueueConnection}
+		}
+		cfg.Scheduler = config.SchedulerConfig{Enabled: result.HasLaravelScheduler}
+	} else {
+		// A pure API Platform app typically returns 404 on "/" in prod, which
+		// would fail the deploy health check: default to the API entrypoint.
+		if result.HasAPIPlatform {
+			cfg.Deploy.HealthcheckPath = "/api"
+		}
+
+		// Enable FrankenPHP worker mode when the app ships a worker runtime
+		// (announced via a scanner warning — never silent)
+		if result.HasFrankenPHPRuntime {
+			cfg.FrankenPHP.Worker = true
+		}
+
+		// Auto-fill Messenger config from the transports actually configured
+		// in messenger.yaml (never guess "async": a wrong transport name is a
+		// crash-looping worker)
+		if result.HasMessenger && len(result.MessengerTransports) > 0 {
+			cfg.Messenger = config.MessengerConfig{
+				Enabled:    true,
+				Transports: result.MessengerTransports,
+			}
+		}
+
+		// symfony/scheduler: its scheduler_default transport must be consumed
+		// or scheduled tasks silently never run
+		if result.HasScheduler {
+			cfg.Messenger.Enabled = true
+			if !contains(cfg.Messenger.Transports, "scheduler_default") {
+				cfg.Messenger.Transports = append(cfg.Messenger.Transports, "scheduler_default")
+			}
+		}
+
+		// Auto-fill Mailer config if detected
+		if result.HasMailer {
+			cfg.Mailer = config.MailerConfig{Enabled: true}
+		}
 	}
 
-	// Enable FrankenPHP worker mode when the app ships a worker runtime
-	// (announced via a scanner warning — never silent)
-	if result.HasFrankenPHPRuntime {
-		cfg.FrankenPHP.Worker = true
-	}
-
-	// For SQLite, add the database directory to shared_dirs for persistence
+	// For SQLite, persist the database across releases. Symfony keeps the
+	// directory; Laravel keeps the file, because sharing the whole database/
+	// directory would hide database/migrations.
 	if result.Database.Driver == "sqlite" && result.Database.Path != "" {
-		sqliteDir := getSQLiteDirectory(result.Database.Path)
-		if sqliteDir != "" && !contains(cfg.Deploy.SharedDirs, sqliteDir) {
-			cfg.Deploy.SharedDirs = append(cfg.Deploy.SharedDirs, sqliteDir)
+		if result.Framework == config.FrameworkLaravel {
+			if !contains(cfg.Deploy.SharedFiles, result.Database.Path) {
+				cfg.Deploy.SharedFiles = append(cfg.Deploy.SharedFiles, result.Database.Path)
+			}
+		} else {
+			sqliteDir := getSQLiteDirectory(result.Database.Path)
+			if sqliteDir != "" && !contains(cfg.Deploy.SharedDirs, sqliteDir) {
+				cfg.Deploy.SharedDirs = append(cfg.Deploy.SharedDirs, sqliteDir)
+			}
 		}
-	}
-
-	// Auto-fill Messenger config from the transports actually configured
-	// in messenger.yaml (never guess "async": a wrong transport name is a
-	// crash-looping worker)
-	if result.HasMessenger && len(result.MessengerTransports) > 0 {
-		cfg.Messenger = config.MessengerConfig{
-			Enabled:    true,
-			Transports: result.MessengerTransports,
-		}
-	}
-
-	// symfony/scheduler: its scheduler_default transport must be consumed
-	// or scheduled tasks silently never run
-	if result.HasScheduler {
-		cfg.Messenger.Enabled = true
-		if !contains(cfg.Messenger.Transports, "scheduler_default") {
-			cfg.Messenger.Transports = append(cfg.Messenger.Transports, "scheduler_default")
-		}
-	}
-
-	// Auto-fill Mailer config if detected
-	if result.HasMailer {
-		cfg.Mailer = config.MailerConfig{Enabled: true}
 	}
 
 	// Auto-fill MongoDB service config if detected. Managed stays false by
@@ -371,6 +427,16 @@ func contains(slice []string, value string) bool {
 // generateDefaultHooks creates default deployment hooks based on detected features
 func (s *Scanner) generateDefaultHooks(result *config.ScanResult) config.Hooks {
 	hooks := config.Hooks{}
+
+	if result.Framework == config.FrameworkLaravel {
+		// Laravel always ships database/migrations. --force is mandatory in
+		// production: without it Artisan prompts for confirmation and the
+		// hook hangs until the deploy times out.
+		if result.Database.Driver != "" {
+			hooks.PreDeploy = append(hooks.PreDeploy, "php artisan migrate --force")
+		}
+		return hooks
+	}
 
 	// Doctrine alone is not enough: an app can use the ORM without the
 	// migrations bundle (the Symfony Demo does), and the hook would fail

@@ -50,6 +50,54 @@ func TestLoadProjectConfig_ValidatesAppName(t *testing.T) {
 	}
 }
 
+func TestLoadProjectConfig_FrameworkDefaultsToSymfony(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "frankendeploy.yaml")
+	// A configuration written before Laravel support: no framework key.
+	if err := os.WriteFile(path, []byte("name: my-app\nphp:\n  version: '8.3'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if cfg.Framework != FrameworkSymfony {
+		t.Errorf("Framework = %q, want %q", cfg.Framework, FrameworkSymfony)
+	}
+}
+
+func TestLoadProjectConfig_FrameworkLaravel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "frankendeploy.yaml")
+	if err := os.WriteFile(path, []byte("name: my-app\nframework: laravel\nphp:\n  version: '8.3'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadProjectConfig(path)
+	if err != nil {
+		t.Fatalf("LoadProjectConfig() error = %v", err)
+	}
+	if cfg.EffectiveFramework() != FrameworkLaravel {
+		t.Errorf("EffectiveFramework() = %q, want %q", cfg.EffectiveFramework(), FrameworkLaravel)
+	}
+}
+
+func TestValidateProjectConfig_RejectsUnknownFramework(t *testing.T) {
+	cfg := DefaultProjectConfig()
+	cfg.Name = "my-app"
+	cfg.Framework = "drupal"
+
+	if errs := ValidateProjectConfig(cfg); !errs.HasErrors() {
+		t.Error("ValidateProjectConfig() should reject an unknown framework")
+	}
+
+	cfg.Framework = FrameworkLaravel
+	if errs := ValidateProjectConfig(cfg); errs.HasErrors() {
+		t.Errorf("ValidateProjectConfig() should accept laravel, got %v", errs)
+	}
+}
+
 func TestLoadProjectConfig_ValidatesHooks(t *testing.T) {
 	tests := []struct {
 		name    string

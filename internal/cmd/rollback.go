@@ -172,11 +172,17 @@ func runRollback(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("swap failed: %w", err)
 	}
 
-	// Roll back the Messenger worker to the same image
-	if cfg.Messenger.Enabled {
-		PrintInfo("Rolling back Messenger worker...")
-		if err := deployMessengerWorkers(ctx, client, cfg, imageName, appPath, databaseURL); err != nil {
-			PrintWarning("Failed to roll back Messenger worker: %v", err)
+	// Roll back the background worker and scheduler to the same image
+	if _, enabled := workerCommand(cfg); enabled {
+		PrintInfo("Rolling back background worker...")
+		if err := deployWorkers(ctx, client, cfg, imageName, appPath, databaseURL); err != nil {
+			PrintWarning("Failed to roll back background worker: %v", err)
+		}
+	}
+	if cfg.Scheduler.Enabled {
+		PrintInfo("Rolling back scheduler...")
+		if err := deployScheduler(ctx, client, cfg, imageName, appPath, databaseURL); err != nil {
+			PrintWarning("Failed to roll back scheduler: %v", err)
 		}
 	}
 

@@ -53,6 +53,15 @@ func ValidateProjectConfig(config *ProjectConfig) ValidationErrors {
 		})
 	}
 
+	switch config.Framework {
+	case "", FrameworkSymfony, FrameworkLaravel:
+	default:
+		errors = append(errors, ValidationError{
+			Field:   "framework",
+			Message: `unsupported framework (use "symfony" or "laravel")`,
+		})
+	}
+
 	if config.PHP.Version == "" {
 		errors = append(errors, ValidationError{
 			Field:   "php.version",

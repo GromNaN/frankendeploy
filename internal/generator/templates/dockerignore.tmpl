@@ -21,17 +21,31 @@ node_modules
 
 # Build artifacts
 public/build
+{{- if .IsLaravel }}
+storage/logs/*
+storage/framework/cache/data/*
+storage/framework/sessions/*
+storage/framework/views/*
+bootstrap/cache/*
+{{- else }}
 var/cache
 var/log
+{{- end }}
 
 # Test files
 tests
 phpunit.xml*
 .phpunit*
 
-# Dev files
+# Dev files and secrets
+{{- if .IsLaravel }}
+# Laravel secrets and local overrides: never ship .env in the image
+.env
+.env.*
+{{- else }}
 .env.local
 .env.*.local
+{{- end }}
 *.md
 LICENSE
 

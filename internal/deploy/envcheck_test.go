@@ -321,6 +321,163 @@ func TestBuildEnvContent_DeterministicOrdering(t *testing.T) {
 	}
 }
 
+func TestGenerateLaravelAppKey(t *testing.T) {
+	key, err := GenerateLaravelAppKey()
+	if err != nil {
+		t.Fatalf("GenerateLaravelAppKey() error = %v", err)
+	}
+
+	if !strings.HasPrefix(key, "base64:") {
+		t.Errorf("GenerateLaravelAppKey() = %q, want a base64: prefix", key)
+	}
+	// "base64:" + base64(32 bytes) = 7 + 44 characters
+	if len(key) != 51 {
+		t.Errorf("GenerateLaravelAppKey() length = %d, want 51", len(key))
+	}
+
+	key2, err := GenerateLaravelAppKey()
+	if err != nil {
+		t.Fatalf("GenerateLaravelAppKey() second call error = %v", err)
+	}
+	if key == key2 {
+		t.Error("GenerateLaravelAppKey() generated the same key twice")
+	}
+}
+
+func TestFrameworkEnvRequirements(t *testing.T) {
+	symfony := FrameworkEnvRequirements[config.FrameworkSymfony]
+	laravel := FrameworkEnvRequirements[config.FrameworkLaravel]
+
+	if !hasRequirement(symfony, "APP_SECRET") {
+		t.Error("Symfony requirements must include APP_SECRET")
+	}
+	if hasRequirement(symfony, "APP_KEY") {
+		t.Error("Symfony requirements must not include Laravel's APP_KEY")
+	}
+	if !hasRequirement(laravel, "APP_KEY") {
+		t.Error("Laravel requirements must include APP_KEY")
+	}
+	if hasRequirement(laravel, "APP_SECRET") {
+		t.Error("Laravel requirements must not include Symfony's APP_SECRET")
+	}
+	// Laravel's convention is APP_ENV=production, not "prod".
+	if v := requirementDefault(laravel, "APP_ENV"); v != "production" {
+		t.Errorf("Laravel APP_ENV default = %q, want production", v)
+	}
+	if v := requirementDefault(laravel, "APP_DEBUG"); v != "false" {
+		t.Errorf("Laravel APP_DEBUG default = %q, want false", v)
+	}
+}
+
+func TestLaravelDatabaseEnvVars(t *testing.T) {
+	managed := true
+	laravelManaged := &config.ProjectConfig{
+		Framework: config.FrameworkLaravel,
+		Database:  config.DatabaseConfig{Driver: "pgsql", Managed: &managed},
+	}
+	laravelExternal := &config.ProjectConfig{
+		Framework: config.FrameworkLaravel,
+		Database:  config.DatabaseConfig{Driver: "pgsql", Managed: boolPtr(false)},
+	}
+	symfonyManaged := &config.ProjectConfig{
+		Framework: config.FrameworkSymfony,
+		Database:  config.DatabaseConfig{Driver: "pgsql", Managed: &managed},
+	}
+
+	tests := []struct {
+		name string
+		cfg  *config.ProjectConfig
+		url  string
+		want []string
+	}{
+		{
+			name: "laravel managed pgsql",
+			cfg:  laravelManaged,
+			url:  "postgresql://myapp:hex1234@myapp-db:5432/myapp?serverVersion=16&charset=utf8",
+			want: []string{
+				"DB_CONNECTION=pgsql",
+				"DB_HOST='myapp-db'",
+				"DB_PORT='5432'",
+				"DB_DATABASE='myapp'",
+				"DB_USERNAME='myapp'",
+				"DB_PASSWORD='hex1234'",
+			},
+		},
+		{
+			name: "laravel managed mysql",
+			cfg: &config.ProjectConfig{
+				Framework: config.FrameworkLaravel,
+				Database:  config.DatabaseConfig{Driver: "mysql", Managed: &managed},
+			},
+			url: "mysql://u:p@db:3306/app?serverVersion=8.0",
+			want: []string{
+				"DB_CONNECTION=mysql",
+				"DB_HOST='db'",
+				"DB_PORT='3306'",
+				"DB_DATABASE='app'",
+				"DB_USERNAME='u'",
+				"DB_PASSWORD='p'",
+			},
+		},
+		{
+			name: "laravel external database is never overridden",
+			cfg:  laravelExternal,
+			url:  "postgresql://u:p@external:5432/db",
+			want: nil,
+		},
+		{
+			name: "symfony managed database is not touched",
+			cfg:  symfonyManaged,
+			url:  "postgresql://u:p@db:5432/db",
+			want: nil,
+		},
+		{
+			name: "empty url",
+			cfg:  laravelManaged,
+			url:  "",
+			want: nil,
+		},
+		{
+			name: "unparseable url",
+			cfg:  laravelManaged,
+			url:  "not a url",
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := LaravelDatabaseEnvVars(tt.cfg, tt.url)
+			if len(got) != len(tt.want) {
+				t.Fatalf("LaravelDatabaseEnvVars() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("LaravelDatabaseEnvVars()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func hasRequirement(reqs []EnvRequirement, name string) bool {
+	for _, r := range reqs {
+		if r.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func requirementDefault(reqs []EnvRequirement, name string) string {
+	for _, r := range reqs {
+		if r.Name == name {
+			return r.DefaultValue
+		}
+	}
+	return ""
+}
+
 // Helper function for bool pointers
 func boolPtr(b bool) *bool {
 	return &b

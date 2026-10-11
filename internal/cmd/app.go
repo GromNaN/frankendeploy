@@ -162,6 +162,10 @@ func runAppRemove(cmd *cobra.Command, args []string) error {
 	PrintVerbose("Stopping worker container...")
 	stopAndRemoveContainer(ctx, conn.Client, fmt.Sprintf("%s-worker", appName))
 
+	// Stop and remove the Laravel scheduler container if exists
+	PrintVerbose("Stopping scheduler container...")
+	stopAndRemoveContainer(ctx, conn.Client, fmt.Sprintf("%s-scheduler", appName))
+
 	// Stop and remove database container if exists
 	PrintVerbose("Stopping database container...")
 	stopAndRemoveContainer(ctx, conn.Client, fmt.Sprintf("%s-db", appName))

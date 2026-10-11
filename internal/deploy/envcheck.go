@@ -3,11 +3,14 @@ package deploy
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/yoanbernabeu/frankendeploy/internal/config"
+	"github.com/yoanbernabeu/frankendeploy/internal/security"
 	"github.com/yoanbernabeu/frankendeploy/internal/ssh"
 )
 
@@ -27,10 +30,17 @@ type EnvCheckResult struct {
 }
 
 // FrameworkEnvRequirements defines required variables by framework
-var FrameworkEnvRequirements = map[string][]EnvRequirement{
-	"symfony": {
+var FrameworkEnvRequirements = map[config.Framework][]EnvRequirement{
+	config.FrameworkSymfony: {
 		{Name: "APP_SECRET", Description: "Symfony security secret", CanGenerate: true},
 		{Name: "APP_ENV", Description: "Application environment", DefaultValue: "prod"},
+	},
+	config.FrameworkLaravel: {
+		{Name: "APP_KEY", Description: "Laravel application encryption key", CanGenerate: true},
+		// Laravel's convention is APP_ENV=production (not "prod"): packages
+		// and App::environment('production') checks rely on the exact string.
+		{Name: "APP_ENV", Description: "Application environment", DefaultValue: "production"},
+		{Name: "APP_DEBUG", Description: "Debug mode", DefaultValue: "false"},
 	},
 }
 
@@ -48,8 +58,10 @@ func CheckEnvVars(ctx context.Context, client ssh.Executor, cfg *config.ProjectC
 		return nil, err
 	}
 
-	// Get framework requirements (default to Symfony)
-	requirements := FrameworkEnvRequirements["symfony"]
+	// Select requirements by framework. An unknown framework yields no
+	// requirements: injecting Symfony's APP_SECRET into a non-Symfony app
+	// would be wrong.
+	requirements := FrameworkEnvRequirements[cfg.EffectiveFramework()]
 
 	// Check each required variable
 	for _, req := range requirements {
@@ -114,6 +126,70 @@ func needsDatabaseURL(cfg *config.ProjectConfig) bool {
 	return true
 }
 
+// LaravelDatabaseEnvVars returns the "KEY=value" pairs that connect a Laravel
+// app to a managed database container. Laravel's config/database.php reads
+// DB_CONNECTION plus DB_HOST/DB_PORT/DB_DATABASE/DB_USERNAME/DB_PASSWORD; it
+// does not read DATABASE_URL, so the Symfony-style URL alone is not enough.
+//
+// Returns nil for a non-Laravel app, for a non-managed database (the user's
+// own .env is authoritative and must not be overridden), or when the URL
+// cannot be parsed. Values are shell-escaped for direct use in a docker run.
+func LaravelDatabaseEnvVars(cfg *config.ProjectConfig, databaseURL string) []string {
+	if cfg.EffectiveFramework() != config.FrameworkLaravel {
+		return nil
+	}
+	if !cfg.Database.IsManaged() || databaseURL == "" {
+		return nil
+	}
+
+	u, err := url.Parse(databaseURL)
+	if err != nil || u.Hostname() == "" {
+		return nil
+	}
+
+	connection := laravelConnectionFromScheme(u.Scheme)
+	if connection == "" {
+		return nil
+	}
+
+	password, _ := u.User.Password()
+	vars := []string{
+		"DB_CONNECTION=" + connection,
+		"DB_HOST=" + security.ShellEscape(u.Hostname()),
+	}
+	if port := u.Port(); port != "" {
+		vars = append(vars, "DB_PORT="+security.ShellEscape(port))
+	}
+	if dbName := strings.TrimPrefix(u.Path, "/"); dbName != "" {
+		vars = append(vars, "DB_DATABASE="+security.ShellEscape(dbName))
+	}
+	if user := u.User.Username(); user != "" {
+		vars = append(vars, "DB_USERNAME="+security.ShellEscape(user))
+	}
+	if password != "" {
+		vars = append(vars, "DB_PASSWORD="+security.ShellEscape(password))
+	}
+
+	return vars
+}
+
+// laravelConnectionFromScheme maps a database URL scheme to the Laravel
+// DB_CONNECTION name. Returns "" for an unknown scheme.
+func laravelConnectionFromScheme(scheme string) string {
+	switch scheme {
+	case "postgres", "postgresql", "pgsql":
+		return "pgsql"
+	case "mysql":
+		return "mysql"
+	case "mariadb":
+		return "mariadb"
+	case "sqlite":
+		return "sqlite"
+	default:
+		return ""
+	}
+}
+
 // GenerateSymfonySecret generates a secure 64-character hex secret
 func GenerateSymfonySecret() (string, error) {
 	bytes := make([]byte, 32)
@@ -121,6 +197,17 @@ func GenerateSymfonySecret() (string, error) {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+// GenerateLaravelAppKey generates a Laravel APP_KEY: "base64:" followed by the
+// base64 encoding of 32 random bytes, the exact format `php artisan
+// key:generate` produces.
+func GenerateLaravelAppKey() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %w", err)
+	}
+	return "base64:" + base64.StdEncoding.EncodeToString(bytes), nil
 }
 
 // GenerateMissingSecrets generates values for variables that can be auto-generated
@@ -139,6 +226,12 @@ func GenerateMissingSecrets(missing []EnvRequirement) (map[string]string, error)
 				return nil, fmt.Errorf("failed to generate APP_SECRET: %w", err)
 			}
 			generated["APP_SECRET"] = secret
+		case "APP_KEY":
+			key, err := GenerateLaravelAppKey()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate APP_KEY: %w", err)
+			}
+			generated["APP_KEY"] = key
 		}
 	}
 
@@ -179,6 +272,8 @@ func FormatEnvCheckError(missing []EnvRequirement, serverName string) string {
 		switch req.Name {
 		case "APP_SECRET":
 			sb.WriteString(fmt.Sprintf("   frankendeploy env set %s APP_SECRET=$(openssl rand -hex 32)\n", serverName))
+		case "APP_KEY":
+			sb.WriteString(fmt.Sprintf("   frankendeploy env set %s APP_KEY=\"base64:$(openssl rand -base64 32)\"\n", serverName))
 		case "DATABASE_URL":
 			sb.WriteString(fmt.Sprintf("   frankendeploy env set %s DATABASE_URL=\"postgresql://user:pass@host:5432/db\"\n", serverName))
 		case "MONGODB_URI":

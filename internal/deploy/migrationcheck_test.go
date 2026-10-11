@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/yoanbernabeu/frankendeploy/internal/config"
 )
 
 func TestMigrationCheckResult_HasPotentialProblem(t *testing.T) {
@@ -73,24 +75,69 @@ func TestFormatMigrationWarning(t *testing.T) {
 		HasPotentialProblem: true,
 	}
 
-	warning := FormatMigrationWarning(result)
-
-	expectedStrings := []string{
-		"No database migrations found but entities exist",
-		"5 files in src/Entity/",
-		"0 files in migrations/",
-		"no such table",
-		"make:migration",
-		"doctrine:migrations:migrate",
-		"git add migrations/",
-		"git commit",
-		"redeploy",
+	tests := []struct {
+		name     string
+		fw       config.Framework
+		expected []string
+	}{
+		{
+			name: "symfony",
+			fw:   config.FrameworkSymfony,
+			expected: []string{
+				"No database migrations found but models exist",
+				"5 files in src/Entity/",
+				"0 files in migrations/",
+				"no such table",
+				"make:migration",
+				"doctrine:migrations:migrate",
+				"git add migrations/",
+				"git commit",
+				"redeploy",
+			},
+		},
+		{
+			name: "laravel",
+			fw:   config.FrameworkLaravel,
+			expected: []string{
+				"No database migrations found but models exist",
+				"5 files in app/Models/",
+				"0 files in database/migrations/",
+				"no such table",
+				"php artisan make:migration",
+				"php artisan migrate",
+				"git add database/migrations/",
+				"git commit",
+				"redeploy",
+			},
+		},
 	}
 
-	for _, expected := range expectedStrings {
-		if !strings.Contains(warning, expected) {
-			t.Errorf("FormatMigrationWarning() missing expected string: %s", expected)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warning := FormatMigrationWarning(result, tt.fw)
+			for _, expected := range tt.expected {
+				if !strings.Contains(warning, expected) {
+					t.Errorf("FormatMigrationWarning() missing expected string: %s", expected)
+				}
+			}
+		})
+	}
+}
+
+func TestLayoutFor(t *testing.T) {
+	symfony := layoutFor(config.FrameworkSymfony)
+	if symfony.MigrationsDir != "/app/migrations" || symfony.ModelsDir != "/app/src/Entity" {
+		t.Errorf("unexpected symfony layout: %+v", symfony)
+	}
+
+	// Empty framework falls back to Symfony.
+	if layoutFor("") != symfony {
+		t.Error("empty framework must fall back to the Symfony layout")
+	}
+
+	laravel := layoutFor(config.FrameworkLaravel)
+	if laravel.MigrationsDir != "/app/database/migrations" || laravel.ModelsDir != "/app/app/Models" {
+		t.Errorf("unexpected laravel layout: %+v", laravel)
 	}
 }
 
@@ -128,6 +175,21 @@ func TestHasMigrationHook(t *testing.T) {
 		{
 			name:     "messenger stop workers (not migration)",
 			hooks:    []string{"php bin/console messenger:stop-workers"},
+			expected: false,
+		},
+		{
+			name:     "laravel migrate --force",
+			hooks:    []string{"php artisan migrate --force"},
+			expected: true,
+		},
+		{
+			name:     "laravel migrate:fresh",
+			hooks:    []string{"php artisan migrate:fresh --force"},
+			expected: true,
+		},
+		{
+			name:     "laravel non-migration artisan command",
+			hooks:    []string{"php artisan optimize:clear"},
 			expected: false,
 		},
 	}

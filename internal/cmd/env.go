@@ -45,7 +45,8 @@ Example:
   frankendeploy env set prod DATABASE_URL="postgresql://user:pass@host/db"
   frankendeploy env set prod APP_SECRET --from-stdin
   openssl rand -hex 32 | frankendeploy env set prod APP_SECRET --from-stdin
-  frankendeploy env set prod APP_SECRET="my-secret-key" --reload`,
+  frankendeploy env set prod APP_SECRET="my-secret-key" --reload
+  frankendeploy env set prod APP_KEY="base64:$(openssl rand -base64 32)"  # Laravel`,
 	Args: cobra.ExactArgs(2),
 	RunE: runEnvSet,
 }

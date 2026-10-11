@@ -8,9 +8,47 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yoanbernabeu/frankendeploy/internal/config"
 	"github.com/yoanbernabeu/frankendeploy/internal/constants"
 	"github.com/yoanbernabeu/frankendeploy/internal/ssh"
 )
+
+// migrationLayout describes where a framework keeps migrations and models and
+// how to create/run migrations, for the migration-state check and warning.
+type migrationLayout struct {
+	MigrationsDir   string // find target for migration files
+	ModelsDir       string // find target for model/entity files
+	ModelsLabel     string // human label for the models dir
+	MigrationsLabel string // human label for the migrations dir
+	MakeCommand     string // command shown in the warning to create a migration
+	RunCommand      string // command shown in the warning to run migrations
+	AddPath         string // git add target shown in the warning
+}
+
+// layoutFor returns the migration layout for the given framework (zero value
+// and unknown values fall back to Symfony).
+func layoutFor(fw config.Framework) migrationLayout {
+	if fw == config.FrameworkLaravel {
+		return migrationLayout{
+			MigrationsDir:   "/app/database/migrations",
+			ModelsDir:       "/app/app/Models",
+			ModelsLabel:     "app/Models/",
+			MigrationsLabel: "database/migrations/",
+			MakeCommand:     "php artisan make:migration <name>",
+			RunCommand:      "php artisan migrate",
+			AddPath:         "database/migrations/",
+		}
+	}
+	return migrationLayout{
+		MigrationsDir:   "/app/migrations",
+		ModelsDir:       "/app/src/Entity",
+		ModelsLabel:     "src/Entity/",
+		MigrationsLabel: "migrations/",
+		MakeCommand:     "php bin/console make:migration",
+		RunCommand:      "php bin/console doctrine:migrations:migrate",
+		AddPath:         "migrations/",
+	}
+}
 
 // MigrationCheckResult holds the result of migration directory check
 type MigrationCheckResult struct {
@@ -19,15 +57,17 @@ type MigrationCheckResult struct {
 	HasPotentialProblem bool
 }
 
-// CheckMigrationState checks if migrations exist when entities are present
-// It runs docker exec commands to count files in migrations/ and src/Entity/
-func CheckMigrationState(ctx context.Context, client ssh.Executor, containerName string) (*MigrationCheckResult, error) {
+// CheckMigrationState checks if migrations exist when models are present.
+// It runs docker exec commands to count files in the framework's migrations
+// and models directories.
+func CheckMigrationState(ctx context.Context, client ssh.Executor, containerName string, fw config.Framework) (*MigrationCheckResult, error) {
+	layout := layoutFor(fw)
 	result := &MigrationCheckResult{}
 
-	// Count migration files (.php files in /app/migrations/)
+	// Count migration files
 	migrationCmd := fmt.Sprintf(
-		"docker exec %s sh -c 'find /app/migrations -name \"*.php\" -type f 2>/dev/null | wc -l'",
-		containerName,
+		"docker exec %s sh -c 'find %s -name \"*.php\" -type f 2>/dev/null | wc -l'",
+		containerName, layout.MigrationsDir,
 	)
 	migrationResult, err := client.Exec(ctx, migrationCmd)
 	if err != nil {
@@ -35,10 +75,10 @@ func CheckMigrationState(ctx context.Context, client ssh.Executor, containerName
 	}
 	result.MigrationFilesCount = parseCount(migrationResult.Stdout)
 
-	// Count entity files (.php files in /app/src/Entity/)
+	// Count model/entity files
 	entityCmd := fmt.Sprintf(
-		"docker exec %s sh -c 'find /app/src/Entity -name \"*.php\" -type f 2>/dev/null | wc -l'",
-		containerName,
+		"docker exec %s sh -c 'find %s -name \"*.php\" -type f 2>/dev/null | wc -l'",
+		containerName, layout.ModelsDir,
 	)
 	entityResult, err := client.Exec(ctx, entityCmd)
 	if err != nil {
@@ -97,29 +137,33 @@ func getMigrationWarningMarkerPath(appName string) string {
 }
 
 // FormatMigrationWarning formats the warning message for display
-func FormatMigrationWarning(result *MigrationCheckResult) string {
+func FormatMigrationWarning(result *MigrationCheckResult, fw config.Framework) string {
+	layout := layoutFor(fw)
 	var sb strings.Builder
 
-	sb.WriteString("Warning: No database migrations found but entities exist!\n\n")
-	sb.WriteString(fmt.Sprintf("   Entities found: %d files in src/Entity/\n", result.EntityFilesCount))
-	sb.WriteString(fmt.Sprintf("   Migrations:     %d files in migrations/\n", result.MigrationFilesCount))
+	sb.WriteString("Warning: No database migrations found but models exist!\n\n")
+	sb.WriteString(fmt.Sprintf("   Models found: %d files in %s\n", result.EntityFilesCount, layout.ModelsLabel))
+	sb.WriteString(fmt.Sprintf("   Migrations:   %d files in %s\n", result.MigrationFilesCount, layout.MigrationsLabel))
 	sb.WriteString("\n")
 	sb.WriteString("   This may cause 'no such table' errors at runtime.\n\n")
 	sb.WriteString("   To fix this, run locally:\n")
-	sb.WriteString("      php bin/console make:migration\n")
-	sb.WriteString("      php bin/console doctrine:migrations:migrate\n")
-	sb.WriteString("      git add migrations/\n")
+	sb.WriteString("      " + layout.MakeCommand + "\n")
+	sb.WriteString("      " + layout.RunCommand + "\n")
+	sb.WriteString("      git add " + layout.AddPath + "\n")
 	sb.WriteString("      git commit -m \"Add database migrations\"\n\n")
 	sb.WriteString("   Then redeploy your application.\n")
 
 	return sb.String()
 }
 
-// HasMigrationHook checks if the hooks list contains a Doctrine migration command
+// HasMigrationHook checks if the hooks list contains a migration command for
+// either framework: Doctrine (Symfony) or artisan migrate (Laravel, including
+// migrate --force and the migrate:* variants).
 func HasMigrationHook(hooks []string) bool {
 	for _, hook := range hooks {
 		if strings.Contains(hook, "doctrine:migrations:migrate") ||
-			strings.Contains(hook, "d:m:m") {
+			strings.Contains(hook, "d:m:m") ||
+			strings.Contains(hook, "artisan migrate") {
 			return true
 		}
 	}

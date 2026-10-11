@@ -1,6 +1,6 @@
 #syntax=docker/dockerfile:1
 # FrankenDeploy - Dockerfile for {{ .Name }}
-# Based on official Symfony Docker best practices
+# Based on official PHP Docker best practices
 
 ###################
 # Versions
@@ -92,7 +92,7 @@ CMD ["frankenphp", "run", "--config", "/etc/caddy/Caddyfile"]
 ###################
 FROM frankenphp_base AS frankenphp_dev
 
-ENV APP_ENV=dev
+ENV APP_ENV={{ if .IsLaravel }}local{{ else }}dev{{ end }}
 ENV XDEBUG_MODE=off
 
 RUN mv "$PHP_INI_DIR/php.ini-development" "$PHP_INI_DIR/php.ini"
@@ -101,6 +101,7 @@ RUN mv "$PHP_INI_DIR/php.ini-development" "$PHP_INI_DIR/php.ini"
 COPY --link . ./
 RUN set -eux; \
     COMPOSER_ALLOW_SUPERUSER=1 composer install --no-scripts --no-progress --prefer-dist; \
+{{- if not .IsLaravel }}
     # Build Symfony assets (Sass, AssetMapper)
     if php bin/console list 2>/dev/null | grep -q "sass:build"; then \
         php bin/console sass:build; \
@@ -110,6 +111,10 @@ RUN set -eux; \
     fi; \
     # Store built assets for volume mount
     mkdir -p /app-assets && cp -r public/assets var/sass /app-assets/ 2>/dev/null || true
+{{- else }}
+    # Laravel: storage and cache directories must be writable
+    mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache
+{{- end }}
 
 # SECURITY: Run as non-root user
 USER app
@@ -122,8 +127,8 @@ CMD ["frankenphp", "run", "--config", "/etc/caddy/Caddyfile", "--watch"]
 ###################
 FROM frankenphp_base AS frankenphp_prod
 
-ENV APP_ENV=prod
-ENV APP_DEBUG=0
+ENV APP_ENV={{ if .IsLaravel }}production{{ else }}prod{{ end }}
+ENV APP_DEBUG={{ if .IsLaravel }}false{{ else }}0{{ end }}
 
 RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 
@@ -142,7 +147,11 @@ opcache.preload = /app/config/preload.php
 EOF
 
 # Copy composer files first for better caching
+{{- if .IsLaravel }}
+COPY --link --chown={{ defaultUID }}:{{ defaultGID }} composer.* ./
+{{- else }}
 COPY --link --chown={{ defaultUID }}:{{ defaultGID }} composer.* symfony.* ./
+{{- end }}
 
 # Install dependencies (no dev)
 RUN set -eux; \
@@ -159,7 +168,7 @@ COPY --link --chown={{ defaultUID }}:{{ defaultGID }} . ./
 COPY --link Caddyfile /etc/caddy/Caddyfile
 {{- end }}
 
-# Generate autoloader (required before running any Symfony commands)
+# Generate autoloader (required before running any console command)
 RUN COMPOSER_ALLOW_SUPERUSER=1 composer dump-autoload --classmap-authoritative --no-dev
 
 # Build assets
@@ -184,6 +193,21 @@ COPY --from=node_build --link --chown={{ defaultUID }}:{{ defaultGID }} /app/{{ 
 # masking it only moves the explosion to the first HTTP request in production
 # Note: We don't use "composer dump-env prod" because env vars are provided at runtime
 # via mounted .env.local or Docker environment variables
+{{- if .IsLaravel }}
+# Laravel: we deliberately do NOT run config:cache here. It would bake the
+# build-time environment into bootstrap/cache/config.php, ignoring the runtime
+# env. The entrypoint runs `php artisan optimize` at container start instead.
+RUN set -eux; \
+    mkdir -p storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache; \
+    if COMPOSER_ALLOW_SUPERUSER=1 composer run-script --list --no-dev | grep -q post-install-cmd; then \
+        COMPOSER_ALLOW_SUPERUSER=1 composer run-script --no-dev post-install-cmd; \
+    fi; \
+    php artisan optimize:clear; \
+    php artisan view:cache; \
+    chmod -R 775 storage bootstrap/cache; \
+    chown -R app:app storage bootstrap/cache; \
+    sync
+{{- else }}
 RUN set -eux; \
     mkdir -p var/cache var/log; \
     if COMPOSER_ALLOW_SUPERUSER=1 composer run-script --list --no-dev | grep -q post-install-cmd; then \
@@ -194,6 +218,7 @@ RUN set -eux; \
     chmod +x bin/console; \
     chown -R app:app var; \
     sync
+{{- end }}
 
 # SECURITY: Run as non-root user
 USER app

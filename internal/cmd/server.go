@@ -830,6 +830,19 @@ func runServerStatus(cmd *cobra.Command, args []string) error {
 						}
 					}
 				}
+
+				// Get scheduler stats if exists (Laravel)
+				schedulerStatsCmd := fmt.Sprintf("docker stats --no-stream --format '{{.CPUPerc}}\t{{.MemUsage}}' %s-scheduler 2>/dev/null", app)
+				schedulerResult, schedulerErr := client.Exec(ctx, schedulerStatsCmd)
+				if schedulerErr == nil {
+					schedulerStats := strings.TrimSpace(schedulerResult.Stdout)
+					if schedulerStats != "" {
+						parts := strings.Split(schedulerStats, "\t")
+						if len(parts) >= 2 {
+							fmt.Printf("    Scheduler: CPU %s, Mem %s\n", parts[0], parts[1])
+						}
+					}
+				}
 			}
 		}
 	}
